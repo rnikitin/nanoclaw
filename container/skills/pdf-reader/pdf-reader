@@ -1,0 +1,96 @@
+#!/bin/bash
+set -euo pipefail
+
+usage() {
+  echo "Usage: pdf-reader <command> [args]"
+  echo ""
+  echo "Commands:"
+  echo "  extract <file> [pages]   Extract text (e.g., pdf-reader extract doc.pdf 1-5)"
+  echo "  info <file>              Show page count and metadata"
+  echo "  fetch <url> [pages]      Download PDF from URL and extract text"
+  exit 1
+}
+
+cmd_extract() {
+  local file="$1"
+  local pages="${2:-}"
+
+  if [ ! -f "$file" ]; then
+    echo "Error: file not found: $file" >&2
+    exit 1
+  fi
+
+  local args=()
+  if [ -n "$pages" ]; then
+    # Parse page range: "3" → -f 3 -l 3, "1-5" → -f 1 -l 5
+    local first last
+    if [[ "$pages" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+      first="${BASH_REMATCH[1]}"
+      last="${BASH_REMATCH[2]}"
+    elif [[ "$pages" =~ ^([0-9]+)$ ]]; then
+      first="${BASH_REMATCH[1]}"
+      last="$first"
+    else
+      echo "Error: invalid page range: $pages (use e.g., 1-5 or 3)" >&2
+      exit 1
+    fi
+    args+=(-f "$first" -l "$last")
+  fi
+
+  pdftotext "${args[@]}" -layout "$file" -
+}
+
+cmd_info() {
+  local file="$1"
+
+  if [ ! -f "$file" ]; then
+    echo "Error: file not found: $file" >&2
+    exit 1
+  fi
+
+  pdfinfo "$file"
+}
+
+cmd_fetch() {
+  local url="$1"
+  local pages="${2:-}"
+
+  local tmpfile
+  tmpfile=$(mktemp /tmp/pdf-reader-XXXXXX.pdf)
+  trap 'rm -f "$tmpfile"' EXIT
+
+  if ! curl -fsSL -o "$tmpfile" "$url"; then
+    echo "Error: failed to download: $url" >&2
+    exit 1
+  fi
+
+  cmd_extract "$tmpfile" "$pages"
+}
+
+# --- Main ---
+
+if [ $# -lt 1 ]; then
+  usage
+fi
+
+command="$1"
+shift
+
+case "$command" in
+  extract)
+    [ $# -lt 1 ] && { echo "Error: extract requires a file path" >&2; exit 1; }
+    cmd_extract "$@"
+    ;;
+  info)
+    [ $# -lt 1 ] && { echo "Error: info requires a file path" >&2; exit 1; }
+    cmd_info "$1"
+    ;;
+  fetch)
+    [ $# -lt 1 ] && { echo "Error: fetch requires a URL" >&2; exit 1; }
+    cmd_fetch "$@"
+    ;;
+  *)
+    echo "Error: unknown command: $command" >&2
+    usage
+    ;;
+esac

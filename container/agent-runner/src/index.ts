@@ -27,6 +27,8 @@ interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
+  thinkingEnabled?: boolean;
 }
 
 interface ContainerOutput {
@@ -34,6 +36,7 @@ interface ContainerOutput {
   result: string | null;
   newSessionId?: string;
   error?: string;
+  isThinking?: boolean;
 }
 
 interface SessionEntry {
@@ -47,9 +50,19 @@ interface SessionsIndex {
   entries: SessionEntry[];
 }
 
+interface ImageContentBlock {
+  type: 'image';
+  source: { type: 'base64'; media_type: string; data: string };
+}
+interface TextContentBlock {
+  type: 'text';
+  text: string;
+}
+type ContentBlock = ImageContentBlock | TextContentBlock;
+
 interface SDKUserMessage {
   type: 'user';
-  message: { role: 'user'; content: string };
+  message: { role: 'user'; content: string | ContentBlock[] };
   parent_tool_use_id: null;
   session_id: string;
 }
@@ -71,6 +84,16 @@ class MessageStream {
     this.queue.push({
       type: 'user',
       message: { role: 'user', content: text },
+      parent_tool_use_id: null,
+      session_id: '',
+    });
+    this.waiting?.();
+  }
+
+  pushMultimodal(content: ContentBlock[]): void {
+    this.queue.push({
+      type: 'user',
+      message: { role: 'user', content },
       parent_tool_use_id: null,
       session_id: '',
     });
@@ -340,6 +363,26 @@ async function runQuery(
   const stream = new MessageStream();
   stream.push(prompt);
 
+  // Load image attachments and send as multimodal content blocks
+  if (containerInput.imageAttachments?.length) {
+    const blocks: ContentBlock[] = [];
+    for (const img of containerInput.imageAttachments) {
+      const imgPath = path.join('/workspace/group', img.relativePath);
+      try {
+        const data = fs.readFileSync(imgPath).toString('base64');
+        blocks.push({
+          type: 'image',
+          source: { type: 'base64', media_type: img.mediaType, data },
+        });
+      } catch (err) {
+        log(`Failed to load image: ${imgPath}`);
+      }
+    }
+    if (blocks.length > 0) {
+      stream.pushMultimodal(blocks);
+    }
+  }
+
   // Poll IPC for follow-up messages and _close sentinel during the query
   let ipcPolling = true;
   let closedDuringQuery = false;
@@ -435,6 +478,18 @@ async function runQuery(
 
     if (message.type === 'assistant' && 'uuid' in message) {
       lastAssistantUuid = (message as { uuid: string }).uuid;
+
+      // Stream assistant text as thinking progress when enabled
+      if (containerInput.thinkingEnabled) {
+        const msg = message as { message?: { content?: Array<{ type: string; text?: string }> } };
+        const textParts = (msg.message?.content || [])
+          .filter((b: { type: string; text?: string }) => b.type === 'text' && b.text)
+          .map((b: { type: string; text?: string }) => b.text!);
+        if (textParts.length > 0) {
+          const text = textParts.join('\n').slice(0, 2000);
+          writeOutput({ status: 'success', result: text, isThinking: true, newSessionId });
+        }
+      }
     }
 
     if (message.type === 'system' && message.subtype === 'init') {
@@ -508,9 +563,61 @@ async function main(): Promise<void> {
   // --- Slash command handling ---
   // Only known session slash commands are handled here. This prevents
   // accidental interception of user prompts that happen to start with '/'.
-  const KNOWN_SESSION_COMMANDS = new Set(['/compact']);
+  const KNOWN_SESSION_COMMANDS = new Set(['/compact', '/usage']);
   const trimmedPrompt = prompt.trim();
   const isSessionSlashCommand = KNOWN_SESSION_COMMANDS.has(trimmedPrompt);
+
+  // --- /usage: report context window usage from last result ---
+  if (trimmedPrompt === '/usage') {
+    log('Handling /usage command');
+    try {
+      for await (const message of query({
+        prompt: 'Respond with exactly: OK',
+        options: {
+          cwd: '/workspace/group',
+          resume: sessionId,
+          allowedTools: [],
+          env: sdkEnv,
+          permissionMode: 'bypassPermissions' as const,
+          allowDangerouslySkipPermissions: true,
+          settingSources: ['project', 'user'] as const,
+        },
+      })) {
+        if (message.type === 'system' && message.subtype === 'init') {
+          sessionId = message.session_id;
+        }
+        if (message.type === 'result' && message.subtype === 'success') {
+          const r = message as unknown as {
+            modelUsage: Record<string, { inputTokens: number; outputTokens: number; contextWindow: number; costUSD: number }>;
+            total_cost_usd: number;
+            usage: { input_tokens: number; output_tokens: number };
+          };
+          const entries = Object.entries(r.modelUsage || {});
+          if (entries.length > 0) {
+            const lines: string[] = [];
+            for (const [model, u] of entries) {
+              const pct = u.contextWindow > 0
+                ? ((u.inputTokens / u.contextWindow) * 100).toFixed(1)
+                : '?';
+              lines.push(
+                `*${model}*\n` +
+                `  Input: ${u.inputTokens.toLocaleString()} / ${u.contextWindow.toLocaleString()} tokens (${pct}%)\n` +
+                `  Output: ${u.outputTokens.toLocaleString()} tokens\n` +
+                `  Cost: $${u.costUSD.toFixed(4)}`
+              );
+            }
+            lines.push(`\nTotal cost: $${r.total_cost_usd?.toFixed(4) || '?'}`);
+            writeOutput({ status: 'success', result: lines.join('\n'), newSessionId: sessionId });
+          } else {
+            writeOutput({ status: 'success', result: 'No usage data available.', newSessionId: sessionId });
+          }
+        }
+      }
+    } catch (err) {
+      writeOutput({ status: 'error', result: null, error: `Usage check failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+    return;
+  }
 
   if (isSessionSlashCommand) {
     log(`Handling session command: ${trimmedPrompt}`);

@@ -1,8 +1,13 @@
+import fs from 'fs';
 import https from 'https';
-import { Api, Bot } from 'grammy';
+import path from 'path';
+
+import { Api, Bot, InputFile } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
+import { resolveGroupFolderPath } from '../group-folder.js';
+import { processImage } from '../image.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
@@ -81,8 +86,14 @@ export class TelegramChannel implements Channel {
     });
 
     this.bot.on('message:text', async (ctx) => {
-      // Skip commands
-      if (ctx.message.text.startsWith('/')) return;
+      // Let NanoClaw session commands through; skip other Telegram bot commands
+      const NANOCLAW_COMMANDS = ['/compact', '/usage', '/restart', '/thinking', '/new'];
+      if (
+        ctx.message.text.startsWith('/') &&
+        !NANOCLAW_COMMANDS.includes(ctx.message.text.trim())
+      ) {
+        return;
+      }
 
       const chatJid = `tg:${ctx.chat.id}`;
       let content = ctx.message.text;
@@ -193,13 +204,100 @@ export class TelegramChannel implements Channel {
       });
     };
 
-    this.bot.on('message:photo', (ctx) => storeNonText(ctx, '[Photo]'));
+    this.bot.on('message:photo', async (ctx) => {
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
+      try {
+        const photos = ctx.message.photo!;
+        const largest = photos[photos.length - 1];
+        const file = await ctx.api.getFile(largest.file_id);
+        const downloadUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
+
+        const res = await fetch(downloadUrl);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buffer = Buffer.from(await res.arrayBuffer());
+
+        const groupDir = resolveGroupFolderPath(group.folder);
+        const caption = ctx.message.caption || '';
+        const result = await processImage(buffer, groupDir, caption);
+
+        if (result) {
+          // Deliver directly — storeNonText would double-append the caption
+          const timestamp = new Date(ctx.message.date * 1000).toISOString();
+          const senderName =
+            ctx.from?.first_name ||
+            ctx.from?.username ||
+            ctx.from?.id?.toString() ||
+            'Unknown';
+          const isGroup =
+            ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+          this.opts.onChatMetadata(
+            chatJid,
+            timestamp,
+            undefined,
+            'telegram',
+            isGroup,
+          );
+          this.opts.onMessage(chatJid, {
+            id: ctx.message.message_id.toString(),
+            chat_jid: chatJid,
+            sender: ctx.from?.id?.toString() || '',
+            sender_name: senderName,
+            content: result.content,
+            timestamp,
+            is_from_me: false,
+          });
+          logger.info({ chatJid }, 'Telegram photo processed for vision');
+          return;
+        }
+      } catch (err) {
+        logger.error({ chatJid, err }, 'Failed to process Telegram photo');
+      }
+      // Fallback: store as placeholder
+      storeNonText(ctx, '[Photo]');
+    });
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
     this.bot.on('message:voice', (ctx) => storeNonText(ctx, '[Voice message]'));
     this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
-    this.bot.on('message:document', (ctx) => {
-      const name = ctx.message.document?.file_name || 'file';
-      storeNonText(ctx, `[Document: ${name}]`);
+    this.bot.on('message:document', async (ctx) => {
+      const doc = ctx.message.document;
+      const name = doc?.file_name || 'file';
+      const isPdf =
+        doc?.mime_type === 'application/pdf' ||
+        name.toLowerCase().endsWith('.pdf');
+
+      if (!isPdf) {
+        storeNonText(ctx, `[Document: ${name}]`);
+        return;
+      }
+
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
+      try {
+        const file = await ctx.getFile();
+        const downloadUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
+
+        const groupDir = resolveGroupFolderPath(group.folder);
+        const attachDir = path.join(groupDir, 'attachments');
+        fs.mkdirSync(attachDir, { recursive: true });
+
+        const localPath = path.join(attachDir, name);
+        const res = await fetch(downloadUrl);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buffer = Buffer.from(await res.arrayBuffer());
+        fs.writeFileSync(localPath, buffer);
+
+        const containerPath = `/workspace/group/attachments/${name}`;
+        storeNonText(ctx, `[PDF: ${name} → ${containerPath}]`);
+        logger.info({ chatJid, name, localPath }, 'Telegram PDF downloaded');
+      } catch (err) {
+        logger.error({ chatJid, name, err }, 'Failed to download Telegram PDF');
+        storeNonText(ctx, `[Document: ${name}]`);
+      }
     });
     this.bot.on('message:sticker', (ctx) => {
       const emoji = ctx.message.sticker?.emoji || '';
@@ -212,6 +310,17 @@ export class TelegramChannel implements Channel {
     this.bot.catch((err) => {
       logger.error({ err: err.message }, 'Telegram bot error');
     });
+
+    // Register bot command hints in Telegram UI
+    await this.bot.api.setMyCommands([
+      { command: 'usage', description: 'Show token usage and cost' },
+      { command: 'thinking', description: 'Toggle thinking mode on/off' },
+      { command: 'compact', description: 'Compact conversation context' },
+      { command: 'new', description: 'Start new conversation' },
+      { command: 'restart', description: 'Restart the bot' },
+      { command: 'ping', description: 'Check if bot is online' },
+      { command: 'chatid', description: 'Show chat ID for registration' },
+    ]);
 
     // Start polling — returns a Promise that resolves when started
     return new Promise<void>((resolve) => {
@@ -256,6 +365,28 @@ export class TelegramChannel implements Channel {
       logger.info({ jid, length: text.length }, 'Telegram message sent');
     } catch (err) {
       logger.error({ jid, err }, 'Failed to send Telegram message');
+    }
+  }
+
+  async sendFile(jid: string, filePath: string, caption?: string): Promise<void> {
+    if (!this.bot) {
+      logger.warn('Telegram bot not initialized');
+      return;
+    }
+
+    try {
+      const numericId = jid.replace(/^tg:/, '');
+      const fileBuffer = fs.readFileSync(filePath);
+      const fileName = path.basename(filePath);
+      const inputFile = new InputFile(fileBuffer, fileName);
+
+      await this.bot.api.sendDocument(numericId, inputFile, {
+        caption,
+        parse_mode: caption ? 'Markdown' : undefined,
+      });
+      logger.info({ jid, filePath: fileName }, 'Telegram file sent');
+    } catch (err) {
+      logger.error({ jid, filePath, err }, 'Failed to send Telegram file');
     }
   }
 

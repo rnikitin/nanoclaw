@@ -24,6 +24,29 @@ vi.mock('../logger.js', () => ({
   },
 }));
 
+// Mock group-folder
+vi.mock('../group-folder.js', () => ({
+  resolveGroupFolderPath: vi.fn(
+    (folder: string) => `/tmp/nanoclaw-test-groups/${folder}`,
+  ),
+}));
+
+// Mock fs (only the methods we need)
+const fsMocks = vi.hoisted(() => ({
+  mkdirSync: vi.fn(),
+  writeFileSync: vi.fn(),
+}));
+vi.mock('fs', async () => {
+  const actual = await vi.importActual<typeof import('fs')>('fs');
+  return { ...actual, default: { ...actual, ...fsMocks }, ...fsMocks };
+});
+
+// Mock image processing
+const processImageMock = vi.hoisted(() => vi.fn());
+vi.mock('../image.js', () => ({
+  processImage: processImageMock,
+}));
+
 // --- Grammy mock ---
 
 type Handler = (...args: any[]) => any;
@@ -31,6 +54,9 @@ type Handler = (...args: any[]) => any;
 const botRef = vi.hoisted(() => ({ current: null as any }));
 
 vi.mock('grammy', () => ({
+  InputFile: class MockInputFile {
+    constructor(public data: any, public filename?: string) {}
+  },
   Bot: class MockBot {
     token: string;
     commandHandlers = new Map<string, Handler>();
@@ -40,6 +66,8 @@ vi.mock('grammy', () => ({
     api = {
       sendMessage: vi.fn().mockResolvedValue(undefined),
       sendChatAction: vi.fn().mockResolvedValue(undefined),
+      sendDocument: vi.fn().mockResolvedValue(undefined),
+      setMyCommands: vi.fn().mockResolvedValue(undefined),
     };
 
     constructor(token: string) {
@@ -136,6 +164,8 @@ function createMediaCtx(overrides: {
   messageId?: number;
   caption?: string;
   extra?: Record<string, any>;
+  getFile?: () => Promise<any>;
+  apiGetFile?: () => Promise<any>;
 }) {
   const chatId = overrides.chatId ?? 100200300;
   return {
@@ -156,6 +186,10 @@ function createMediaCtx(overrides: {
       ...(overrides.extra || {}),
     },
     me: { username: 'andy_ai_bot' },
+    getFile: overrides.getFile ?? vi.fn(),
+    api: {
+      getFile: overrides.apiGetFile ?? vi.fn().mockResolvedValue({ file_path: 'photos/test.jpg' }),
+    },
   };
 }
 
@@ -541,32 +575,69 @@ describe('TelegramChannel', () => {
   // --- Non-text messages ---
 
   describe('non-text messages', () => {
-    it('stores photo with placeholder', async () => {
+    it('stores photo with placeholder when processImage fails', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      const ctx = createMediaCtx({});
+      processImageMock.mockResolvedValue(null);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          arrayBuffer: () => Promise.resolve(new ArrayBuffer(10)),
+        }),
+      );
+
+      const ctx = createMediaCtx({
+        extra: {
+          photo: [
+            { file_id: 'small', width: 90, height: 90 },
+            { file_id: 'large', width: 800, height: 600 },
+          ],
+        },
+      });
       await triggerMediaMessage('message:photo', ctx);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({ content: '[Photo]' }),
       );
+
+      vi.unstubAllGlobals();
     });
 
-    it('stores photo with caption', async () => {
+    it('stores photo with caption as fallback', async () => {
       const opts = createTestOpts();
       const channel = new TelegramChannel('test-token', opts);
       await channel.connect();
 
-      const ctx = createMediaCtx({ caption: 'Look at this' });
+      processImageMock.mockRejectedValue(new Error('sharp failed'));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          arrayBuffer: () => Promise.resolve(new ArrayBuffer(10)),
+        }),
+      );
+
+      const ctx = createMediaCtx({
+        caption: 'Look at this',
+        extra: {
+          photo: [
+            { file_id: 'small', width: 90, height: 90 },
+            { file_id: 'large', width: 800, height: 600 },
+          ],
+        },
+      });
       await triggerMediaMessage('message:photo', ctx);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({ content: '[Photo] Look at this' }),
       );
+
+      vi.unstubAllGlobals();
     });
 
     it('stores video with placeholder', async () => {
@@ -692,6 +763,322 @@ describe('TelegramChannel', () => {
 
       const ctx = createMediaCtx({ chatId: 999999 });
       await triggerMediaMessage('message:photo', ctx);
+
+      expect(opts.onMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  // --- Photo vision ---
+
+  describe('photo vision', () => {
+    it('downloads photo, processes image, and stores with image reference', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      processImageMock.mockResolvedValue({
+        content: '[Image: attachments/img-123-abc.jpg]',
+        relativePath: 'attachments/img-123-abc.jpg',
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          arrayBuffer: () => Promise.resolve(new ArrayBuffer(100)),
+        }),
+      );
+
+      const ctx = createMediaCtx({
+        extra: {
+          photo: [
+            { file_id: 'small_id', width: 90, height: 90 },
+            { file_id: 'large_id', width: 1280, height: 960 },
+          ],
+        },
+      });
+      await triggerMediaMessage('message:photo', ctx);
+
+      expect(ctx.api.getFile).toHaveBeenCalledWith('large_id');
+      expect(processImageMock).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        '/tmp/nanoclaw-test-groups/test-group',
+        '',
+      );
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({
+          content: '[Image: attachments/img-123-abc.jpg]',
+        }),
+      );
+
+      vi.unstubAllGlobals();
+    });
+
+    it('passes caption to processImage', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      processImageMock.mockResolvedValue({
+        content: '[Image: attachments/img-456-def.jpg] Check this',
+        relativePath: 'attachments/img-456-def.jpg',
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          arrayBuffer: () => Promise.resolve(new ArrayBuffer(50)),
+        }),
+      );
+
+      const ctx = createMediaCtx({
+        caption: 'Check this',
+        extra: {
+          photo: [{ file_id: 'photo_id', width: 800, height: 600 }],
+        },
+      });
+      await triggerMediaMessage('message:photo', ctx);
+
+      expect(processImageMock).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        '/tmp/nanoclaw-test-groups/test-group',
+        'Check this',
+      );
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({
+          content: '[Image: attachments/img-456-def.jpg] Check this',
+        }),
+      );
+
+      vi.unstubAllGlobals();
+    });
+
+    it('falls back to placeholder on api.getFile error', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const ctx = createMediaCtx({
+        extra: {
+          photo: [{ file_id: 'bad_id', width: 800, height: 600 }],
+        },
+        apiGetFile: vi.fn().mockRejectedValue(new Error('File expired')),
+      });
+      await triggerMediaMessage('message:photo', ctx);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({ content: '[Photo]' }),
+      );
+    });
+
+    it('falls back when fetch returns non-ok', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({ ok: false, status: 404 }),
+      );
+
+      const ctx = createMediaCtx({
+        extra: {
+          photo: [{ file_id: 'photo_id', width: 800, height: 600 }],
+        },
+      });
+      await triggerMediaMessage('message:photo', ctx);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({ content: '[Photo]' }),
+      );
+
+      vi.unstubAllGlobals();
+    });
+
+    it('ignores photo from unregistered chat', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const ctx = createMediaCtx({
+        chatId: 999999,
+        extra: {
+          photo: [{ file_id: 'photo_id', width: 800, height: 600 }],
+        },
+      });
+      await triggerMediaMessage('message:photo', ctx);
+
+      expect(opts.onMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  // --- PDF document handling ---
+
+  describe('PDF document handling', () => {
+    it('downloads PDF and stores with container path', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        arrayBuffer: () => Promise.resolve(new ArrayBuffer(100)),
+      });
+      vi.stubGlobal('fetch', mockFetch);
+
+      const ctx = createMediaCtx({
+        extra: {
+          document: {
+            file_name: 'report.pdf',
+            mime_type: 'application/pdf',
+          },
+        },
+        getFile: vi.fn().mockResolvedValue({
+          file_path: 'documents/file_123.pdf',
+        }),
+      });
+      await triggerMediaMessage('message:document', ctx);
+
+      expect(ctx.getFile).toHaveBeenCalled();
+      expect(fsMocks.mkdirSync).toHaveBeenCalledWith(
+        '/tmp/nanoclaw-test-groups/test-group/attachments',
+        { recursive: true },
+      );
+      expect(fsMocks.writeFileSync).toHaveBeenCalled();
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({
+          content: '[PDF: report.pdf → /workspace/group/attachments/report.pdf]',
+        }),
+      );
+
+      vi.unstubAllGlobals();
+    });
+
+    it('detects PDF by file extension when mime_type is missing', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          arrayBuffer: () => Promise.resolve(new ArrayBuffer(10)),
+        }),
+      );
+
+      const ctx = createMediaCtx({
+        extra: { document: { file_name: 'notes.PDF' } },
+        getFile: vi.fn().mockResolvedValue({
+          file_path: 'documents/file_456.pdf',
+        }),
+      });
+      await triggerMediaMessage('message:document', ctx);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({
+          content: '[PDF: notes.PDF → /workspace/group/attachments/notes.PDF]',
+        }),
+      );
+
+      vi.unstubAllGlobals();
+    });
+
+    it('non-PDF documents remain as placeholder', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const ctx = createMediaCtx({
+        extra: {
+          document: {
+            file_name: 'data.xlsx',
+            mime_type:
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          },
+        },
+      });
+      await triggerMediaMessage('message:document', ctx);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({ content: '[Document: data.xlsx]' }),
+      );
+    });
+
+    it('falls back to placeholder on download error', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const ctx = createMediaCtx({
+        extra: {
+          document: {
+            file_name: 'broken.pdf',
+            mime_type: 'application/pdf',
+          },
+        },
+        getFile: vi.fn().mockRejectedValue(new Error('File too large')),
+      });
+      await triggerMediaMessage('message:document', ctx);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({ content: '[Document: broken.pdf]' }),
+      );
+    });
+
+    it('falls back when fetch returns non-ok response', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({ ok: false, status: 404 }),
+      );
+
+      const ctx = createMediaCtx({
+        extra: {
+          document: {
+            file_name: 'missing.pdf',
+            mime_type: 'application/pdf',
+          },
+        },
+        getFile: vi.fn().mockResolvedValue({
+          file_path: 'documents/file_789.pdf',
+        }),
+      });
+      await triggerMediaMessage('message:document', ctx);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'tg:100200300',
+        expect.objectContaining({ content: '[Document: missing.pdf]' }),
+      );
+
+      vi.unstubAllGlobals();
+    });
+
+    it('ignores PDF from unregistered chat', async () => {
+      const opts = createTestOpts();
+      const channel = new TelegramChannel('test-token', opts);
+      await channel.connect();
+
+      const ctx = createMediaCtx({
+        chatId: 999999,
+        extra: {
+          document: {
+            file_name: 'secret.pdf',
+            mime_type: 'application/pdf',
+          },
+        },
+      });
+      await triggerMediaMessage('message:document', ctx);
 
       expect(opts.onMessage).not.toHaveBeenCalled();
     });
