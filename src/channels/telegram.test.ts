@@ -55,7 +55,10 @@ const botRef = vi.hoisted(() => ({ current: null as any }));
 
 vi.mock('grammy', () => ({
   InputFile: class MockInputFile {
-    constructor(public data: any, public filename?: string) {}
+    constructor(
+      public data: any,
+      public filename?: string,
+    ) {}
   },
   Bot: class MockBot {
     token: string;
@@ -188,7 +191,9 @@ function createMediaCtx(overrides: {
     me: { username: 'andy_ai_bot' },
     getFile: overrides.getFile ?? vi.fn(),
     api: {
-      getFile: overrides.apiGetFile ?? vi.fn().mockResolvedValue({ file_path: 'photos/test.jpg' }),
+      getFile:
+        overrides.apiGetFile ??
+        vi.fn().mockResolvedValue({ file_path: 'photos/test.jpg' }),
     },
   };
 }
@@ -951,7 +956,8 @@ describe('TelegramChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          content: '[PDF: report.pdf → /workspace/group/attachments/report.pdf]',
+          content:
+            '[PDF: report.pdf → /workspace/group/attachments/report.pdf]',
         }),
       );
 

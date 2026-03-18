@@ -39,7 +39,9 @@ describe('processImage', () => {
 
     expect(result).not.toBeNull();
     expect(result!.relativePath).toMatch(/^attachments\/img-\d+-\w+\.jpg$/);
-    expect(result!.content).toMatch(/^\[Image: attachments\/img-\d+-\w+\.jpg\]$/);
+    expect(result!.content).toMatch(
+      /^\[Image: attachments\/img-\d+-\w+\.jpg\]$/,
+    );
 
     expect(sharpMock.fn).toHaveBeenCalledWith(Buffer.from('raw-image'));
     expect(sharpMock.chain.resize).toHaveBeenCalledWith(1024, 1024, {

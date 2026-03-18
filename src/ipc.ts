@@ -122,11 +122,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       'IPC file not found',
                     );
                   } else {
-                    await deps.sendFile(
-                      data.chatJid,
-                      hostPath,
-                      data.caption,
-                    );
+                    await deps.sendFile(data.chatJid, hostPath, data.caption);
                     logger.info(
                       {
                         chatJid: data.chatJid,

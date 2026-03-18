@@ -87,7 +87,13 @@ export class TelegramChannel implements Channel {
 
     this.bot.on('message:text', async (ctx) => {
       // Let NanoClaw session commands through; skip other Telegram bot commands
-      const NANOCLAW_COMMANDS = ['/compact', '/usage', '/restart', '/thinking', '/new'];
+      const NANOCLAW_COMMANDS = [
+        '/compact',
+        '/usage',
+        '/restart',
+        '/thinking',
+        '/new',
+      ];
       if (
         ctx.message.text.startsWith('/') &&
         !NANOCLAW_COMMANDS.includes(ctx.message.text.trim())
@@ -368,7 +374,11 @@ export class TelegramChannel implements Channel {
     }
   }
 
-  async sendFile(jid: string, filePath: string, caption?: string): Promise<void> {
+  async sendFile(
+    jid: string,
+    filePath: string,
+    caption?: string,
+  ): Promise<void> {
     if (!this.bot) {
       logger.warn('Telegram bot not initialized');
       return;

@@ -220,7 +220,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         group.containerConfig = cfg;
         registeredGroups[chatJid] = group;
         setRegisteredGroup(chatJid, group);
-        logger.info({ group: group.name, enableThinking: cfg.enableThinking }, 'Thinking mode toggled');
+        logger.info(
+          { group: group.name, enableThinking: cfg.enableThinking },
+          'Thinking mode toggled',
+        );
         return cfg.enableThinking!;
       },
     },
@@ -274,39 +277,51 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, imageAttachments, async (result) => {
-    // Streaming output callback — called for each agent result
-    if (result.isThinking && result.result) {
-      // Thinking progress — send as italic
-      const text = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
-      if (text.trim()) {
-        await channel.sendMessage(chatJid, `_${text.trim().slice(0, 2000)}_`);
+  const output = await runAgent(
+    group,
+    prompt,
+    chatJid,
+    imageAttachments,
+    async (result) => {
+      // Streaming output callback — called for each agent result
+      if (result.isThinking && result.result) {
+        // Thinking progress — send as italic
+        const text =
+          typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result);
+        if (text.trim()) {
+          await channel.sendMessage(chatJid, `_${text.trim().slice(0, 2000)}_`);
+        }
+        resetIdleTimer();
+      } else if (result.result) {
+        const raw =
+          typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result);
+        // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
+        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        logger.info(
+          { group: group.name },
+          `Agent output: ${raw.slice(0, 200)}`,
+        );
+        if (text) {
+          await channel.sendMessage(chatJid, text);
+          outputSentToUser = true;
+        }
+        // Only reset idle timer on actual results, not session-update markers (result: null)
+        resetIdleTimer();
       }
-      resetIdleTimer();
-    } else if (result.result) {
-      const raw =
-        typeof result.result === 'string'
-          ? result.result
-          : JSON.stringify(result.result);
-      // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
-      if (text) {
-        await channel.sendMessage(chatJid, text);
-        outputSentToUser = true;
+
+      if (result.status === 'success') {
+        queue.notifyIdle(chatJid);
       }
-      // Only reset idle timer on actual results, not session-update markers (result: null)
-      resetIdleTimer();
-    }
 
-    if (result.status === 'success') {
-      queue.notifyIdle(chatJid);
-    }
-
-    if (result.status === 'error') {
-      hadError = true;
-    }
-  });
+      if (result.status === 'error') {
+        hadError = true;
+      }
+    },
+  );
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
@@ -734,7 +749,10 @@ async function main(): Promise<void> {
     sendFile: (jid, filePath, caption) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      if (!channel.sendFile) throw new Error(`Channel ${channel.name} does not support file sending`);
+      if (!channel.sendFile)
+        throw new Error(
+          `Channel ${channel.name} does not support file sending`,
+        );
       return channel.sendFile(jid, filePath, caption);
     },
     registeredGroups: () => registeredGroups,

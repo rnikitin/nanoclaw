@@ -243,8 +243,10 @@ function buildContainerArgs(
   }
 
   // Pass GitHub token for gh CLI access (if configured)
-  const ghToken = readEnvFile(['GITHUB_TOKEN']).GITHUB_TOKEN
-    || process.env.GITHUB_TOKEN || '';
+  const ghToken =
+    readEnvFile(['GITHUB_TOKEN']).GITHUB_TOKEN ||
+    process.env.GITHUB_TOKEN ||
+    '';
   if (ghToken) {
     args.push('-e', `GITHUB_TOKEN=${ghToken}`);
   }

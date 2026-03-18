@@ -53,9 +53,7 @@ describe('extractSessionCommand', () => {
   });
 
   it('detects /thinking with trigger prefix', () => {
-    expect(extractSessionCommand('@Andy /thinking', trigger)).toBe(
-      '/thinking',
-    );
+    expect(extractSessionCommand('@Andy /thinking', trigger)).toBe('/thinking');
   });
 
   it('detects /new', () => {
