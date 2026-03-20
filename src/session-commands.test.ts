@@ -63,6 +63,14 @@ describe('extractSessionCommand', () => {
   it('detects /new with trigger prefix', () => {
     expect(extractSessionCommand('@Andy /new', trigger)).toBe('/new');
   });
+
+  it('detects /auto-update', () => {
+    expect(extractSessionCommand('/auto-update', trigger)).toBe('/auto-update');
+  });
+
+  it('detects /auto-update with trigger prefix', () => {
+    expect(extractSessionCommand('@Andy /auto-update', trigger)).toBe('/auto-update');
+  });
 });
 
 describe('isSessionCommandAllowed', () => {
@@ -110,8 +118,10 @@ function makeDeps(
     formatMessages: vi.fn().mockReturnValue('<formatted>'),
     canSenderInteract: vi.fn().mockReturnValue(true),
     reboot: vi.fn(),
+    autoUpdate: vi.fn().mockResolvedValue({ report: 'All packages up to date.\n\nclaude-code: 1.0 ✓', rebuilt: false }),
     toggleThinking: vi.fn().mockReturnValue(true),
     resetSession: vi.fn(),
+    getUsageReport: vi.fn().mockReturnValue('No usage data yet.'),
     ...overrides,
   };
 }
@@ -319,6 +329,64 @@ describe('handleSessionCommand', () => {
     expect(deps.sendMessage).toHaveBeenCalledWith('New session started.');
     expect(deps.advanceCursor).toHaveBeenCalledWith('100');
     expect(deps.runAgent).not.toHaveBeenCalled();
+  });
+
+  it('handles /auto-update with no updates needed', async () => {
+    const deps = makeDeps();
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('/auto-update')],
+      isMainGroup: true,
+      groupName: 'test',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+    expect(result).toEqual({ handled: true, success: true });
+    expect(deps.autoUpdate).toHaveBeenCalled();
+    expect(deps.sendMessage).toHaveBeenCalledWith('Checking for updates...');
+    expect(deps.sendMessage).toHaveBeenCalledWith(expect.stringContaining('up to date'));
+    expect(deps.advanceCursor).toHaveBeenCalledWith('100');
+    expect(deps.reboot).not.toHaveBeenCalled();
+  });
+
+  it('handles /auto-update with updates — rebuilds and reboots', async () => {
+    vi.useFakeTimers();
+    const deps = makeDeps({
+      autoUpdate: vi.fn().mockResolvedValue({
+        report: 'Updates found, container rebuilt.\n\nclaude-code: 1.0 → 1.1 ⬆',
+        rebuilt: true,
+      }),
+    });
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('/auto-update')],
+      isMainGroup: true,
+      groupName: 'test',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+    expect(result).toEqual({ handled: true, success: true });
+    expect(deps.sendMessage).toHaveBeenCalledWith(expect.stringContaining('rebuilt'));
+    vi.advanceTimersByTime(500);
+    expect(deps.reboot).toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('handles /auto-update failure gracefully', async () => {
+    const deps = makeDeps({
+      autoUpdate: vi.fn().mockRejectedValue(new Error('network error')),
+    });
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('/auto-update')],
+      isMainGroup: true,
+      groupName: 'test',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+    expect(result).toEqual({ handled: true, success: true });
+    expect(deps.sendMessage).toHaveBeenCalledWith('Update check failed: network error');
+    expect(deps.reboot).not.toHaveBeenCalled();
   });
 
   it('returns success:false on pre-compact failure with no output', async () => {

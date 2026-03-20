@@ -10,12 +10,65 @@
  *             Proxy injects real OAuth token on that exchange request;
  *             subsequent requests carry the temp key which is valid as-is.
  */
+import fs from 'fs';
+import path from 'path';
 import { createServer, Server } from 'http';
 import { request as httpsRequest } from 'https';
 import { request as httpRequest, RequestOptions } from 'http';
 
+import { DATA_DIR } from './config.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
+
+const RATE_LIMITS_PATH = path.join(DATA_DIR, 'rate-limits.json');
+let lastRateLimitWrite = 0;
+const RATE_LIMIT_WRITE_THROTTLE_MS = 10_000;
+
+function captureRateLimitHeaders(
+  headers: Record<string, string | string[] | undefined>,
+): void {
+  const h5 = headers['anthropic-ratelimit-unified-5h-utilization'];
+  const h7 = headers['anthropic-ratelimit-unified-7d-utilization'];
+  if (!h5 && !h7) return;
+
+  const now = Date.now();
+  if (now - lastRateLimitWrite < RATE_LIMIT_WRITE_THROTTLE_MS) return;
+  lastRateLimitWrite = now;
+
+  const data: Record<string, unknown> = { updatedAt: now };
+
+  if (h5) {
+    data.fiveHour = {
+      utilization: parseFloat(String(h5)),
+      reset: parseResetHeader(headers['anthropic-ratelimit-unified-5h-reset']),
+    };
+  }
+  if (h7) {
+    data.sevenDay = {
+      utilization: parseFloat(String(h7)),
+      reset: parseResetHeader(headers['anthropic-ratelimit-unified-7d-reset']),
+    };
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(RATE_LIMITS_PATH), { recursive: true });
+    fs.writeFileSync(RATE_LIMITS_PATH, JSON.stringify(data));
+  } catch (err) {
+    logger.warn({ err }, 'Failed to write rate-limits.json');
+  }
+}
+
+function parseResetHeader(
+  val: string | string[] | undefined,
+): number | undefined {
+  if (!val) return undefined;
+  const s = String(val);
+  // Could be a Unix timestamp or an ISO date string
+  const n = Number(s);
+  if (!isNaN(n)) return n;
+  const d = Date.parse(s);
+  return isNaN(d) ? undefined : Math.floor(d / 1000);
+}
 
 export type AuthMode = 'api-key' | 'oauth';
 
@@ -88,6 +141,9 @@ export function startCredentialProxy(
             headers,
           } as RequestOptions,
           (upRes) => {
+            captureRateLimitHeaders(
+              upRes.headers as Record<string, string | string[] | undefined>,
+            );
             res.writeHead(upRes.statusCode!, upRes.headers);
             upRes.pipe(res);
           },

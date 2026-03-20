@@ -9,6 +9,7 @@ import { readEnvFile } from '../env.js';
 import { resolveGroupFolderPath } from '../group-folder.js';
 import { processImage } from '../image.js';
 import { logger } from '../logger.js';
+import { transcribeAudio } from '../transcription.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
   Channel,
@@ -24,9 +25,77 @@ export interface TelegramChannelOpts {
 }
 
 /**
- * Send a message with Telegram Markdown parse mode, falling back to plain text.
- * Claude's output naturally matches Telegram's Markdown v1 format:
- *   *bold*, _italic_, `code`, ```code blocks```, [links](url)
+ * Escape special characters for Telegram MarkdownV2 (in plain text regions).
+ */
+function escapeV2(text: string): string {
+  return text.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, '\\$1');
+}
+
+/**
+ * Convert standard Markdown (as Claude generates) to Telegram MarkdownV2.
+ * Handles: bold, italic, strikethrough, code, code blocks, links.
+ * Uses a placeholder approach to protect already-converted segments from escaping.
+ */
+export function toMarkdownV2(input: string): string {
+  const tokens: string[] = [];
+  function hold(s: string): string {
+    const i = tokens.length;
+    tokens.push(s);
+    return `\x00${i}\x00`;
+  }
+
+  let text = input;
+
+  // Code blocks — no escaping inside (Telegram treats pre content as-is)
+  text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) =>
+    hold('```' + (lang || '') + '\n' + code + '```'),
+  );
+
+  // Inline code — no escaping inside
+  text = text.replace(/`([^`\n]+)`/g, (_, code) => hold('`' + code + '`'));
+
+  // Bold **text** → *text*
+  text = text.replace(/\*\*(.+?)\*\*/gs, (_, inner) =>
+    hold('*' + escapeV2(inner) + '*'),
+  );
+
+  // Bold __text__ → *text*
+  text = text.replace(/__(.+?)__/gs, (_, inner) =>
+    hold('*' + escapeV2(inner) + '*'),
+  );
+
+  // Italic *text* → _text_
+  text = text.replace(/\*(.+?)\*/gs, (_, inner) =>
+    hold('_' + escapeV2(inner) + '_'),
+  );
+
+  // Italic _text_ (not inside words like some_var_name)
+  text = text.replace(/(?<![\\a-zA-Z0-9])_(.+?)_(?![a-zA-Z0-9])/gs, (_, inner) =>
+    hold('_' + escapeV2(inner) + '_'),
+  );
+
+  // Strikethrough ~~text~~ → ~text~
+  text = text.replace(/~~(.+?)~~/gs, (_, inner) =>
+    hold('~' + escapeV2(inner) + '~'),
+  );
+
+  // Links [text](url)
+  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) =>
+    hold(
+      '[' + escapeV2(label) + '](' + url.replace(/([)\\])/g, '\\$1') + ')',
+    ),
+  );
+
+  // Escape all remaining special characters
+  text = escapeV2(text);
+
+  // Restore protected tokens
+  text = text.replace(/\x00(\d+)\x00/g, (_, idx) => tokens[parseInt(idx)]);
+  return text;
+}
+
+/**
+ * Send a message with Telegram MarkdownV2 parse mode, falling back to plain text.
  */
 async function sendTelegramMessage(
   api: { sendMessage: Api['sendMessage'] },
@@ -35,13 +104,13 @@ async function sendTelegramMessage(
   options: { message_thread_id?: number } = {},
 ): Promise<void> {
   try {
-    await api.sendMessage(chatId, text, {
+    const v2 = toMarkdownV2(text);
+    await api.sendMessage(chatId, v2, {
       ...options,
-      parse_mode: 'Markdown',
+      parse_mode: 'MarkdownV2',
     });
   } catch (err) {
-    // Fallback: send as plain text if Markdown parsing fails
-    logger.debug({ err }, 'Markdown send failed, falling back to plain text');
+    logger.debug({ err }, 'MarkdownV2 send failed, falling back to plain text');
     await api.sendMessage(chatId, text, options);
   }
 }
@@ -52,10 +121,19 @@ export class TelegramChannel implements Channel {
   private bot: Bot | null = null;
   private opts: TelegramChannelOpts;
   private botToken: string;
+  private ownerUserId: string | undefined;
 
   constructor(botToken: string, opts: TelegramChannelOpts) {
     this.botToken = botToken;
     this.opts = opts;
+    // Derive owner user ID from the main group's JID (personal chat = tg:<user_id>)
+    const groups = opts.registeredGroups();
+    for (const [jid, g] of Object.entries(groups)) {
+      if (g.isMain && jid.startsWith('tg:') && !jid.includes('-')) {
+        this.ownerUserId = jid.replace('tg:', '');
+        break;
+      }
+    }
   }
 
   async connect(): Promise<void> {
@@ -75,8 +153,8 @@ export class TelegramChannel implements Channel {
           : (ctx.chat as any).title || 'Unknown';
 
       ctx.reply(
-        `Chat ID: \`tg:${chatId}\`\nName: ${chatName}\nType: ${chatType}`,
-        { parse_mode: 'Markdown' },
+        `Chat ID: \`tg:${chatId}\`\nName: ${escapeV2(chatName)}\nType: ${escapeV2(chatType)}`,
+        { parse_mode: 'MarkdownV2' },
       );
     });
 
@@ -93,16 +171,28 @@ export class TelegramChannel implements Channel {
         '/restart',
         '/thinking',
         '/new',
+        '/auto-update',
+        '/auto_update',
       ];
+      // Strip @bot_username suffix from commands (Telegram adds it in groups)
+      const cmdBase = ctx.message.text.trim().replace(/@\S+/, '').trim();
       if (
         ctx.message.text.startsWith('/') &&
-        !NANOCLAW_COMMANDS.includes(ctx.message.text.trim())
+        !NANOCLAW_COMMANDS.includes(cmdBase)
       ) {
         return;
       }
 
       const chatJid = `tg:${ctx.chat.id}`;
+      // Telegram bot commands use underscores; map to NanoClaw hyphenated form.
+      // Also strip @bot_username suffix from commands (Telegram adds it in groups).
       let content = ctx.message.text;
+      if (content.startsWith('/')) {
+        content = content.replace(/@\S+/, '');
+      }
+      if (content.trim() === '/auto_update') {
+        content = '/auto-update';
+      }
       const timestamp = new Date(ctx.message.date * 1000).toISOString();
       const senderName =
         ctx.from?.first_name ||
@@ -167,7 +257,7 @@ export class TelegramChannel implements Channel {
         sender_name: senderName,
         content,
         timestamp,
-        is_from_me: false,
+        is_from_me: sender === this.ownerUserId,
       });
 
       logger.info(
@@ -206,7 +296,7 @@ export class TelegramChannel implements Channel {
         sender_name: senderName,
         content: `${placeholder}${caption}`,
         timestamp,
-        is_from_me: false,
+        is_from_me: (ctx.from?.id?.toString() || '') === this.ownerUserId,
       });
     };
 
@@ -253,7 +343,7 @@ export class TelegramChannel implements Channel {
             sender_name: senderName,
             content: result.content,
             timestamp,
-            is_from_me: false,
+            is_from_me: (ctx.from?.id?.toString() || '') === this.ownerUserId,
           });
           logger.info({ chatJid }, 'Telegram photo processed for vision');
           return;
@@ -265,7 +355,53 @@ export class TelegramChannel implements Channel {
       storeNonText(ctx, '[Photo]');
     });
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
-    this.bot.on('message:voice', (ctx) => storeNonText(ctx, '[Voice message]'));
+    this.bot.on('message:voice', async (ctx) => {
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
+      try {
+        const file = await ctx.api.getFile(ctx.message.voice.file_id);
+        const downloadUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
+        const res = await fetch(downloadUrl);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buffer = Buffer.from(await res.arrayBuffer());
+
+        const transcript = await transcribeAudio(buffer, 'voice.ogg');
+        if (transcript) {
+          const timestamp = new Date(ctx.message.date * 1000).toISOString();
+          const senderName =
+            ctx.from?.first_name ||
+            ctx.from?.username ||
+            ctx.from?.id?.toString() ||
+            'Unknown';
+          const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
+          const isGroup =
+            ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+          this.opts.onChatMetadata(
+            chatJid,
+            timestamp,
+            undefined,
+            'telegram',
+            isGroup,
+          );
+          this.opts.onMessage(chatJid, {
+            id: ctx.message.message_id.toString(),
+            chat_jid: chatJid,
+            sender: ctx.from?.id?.toString() || '',
+            sender_name: senderName,
+            content: `[Voice: ${transcript}]${caption}`,
+            timestamp,
+            is_from_me: (ctx.from?.id?.toString() || '') === this.ownerUserId,
+          });
+          logger.info({ chatJid }, 'Telegram voice message transcribed');
+          return;
+        }
+      } catch (err) {
+        logger.error({ chatJid, err }, 'Failed to transcribe Telegram voice');
+      }
+      storeNonText(ctx, '[Voice message]');
+    });
     this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
     this.bot.on('message:document', async (ctx) => {
       const doc = ctx.message.document;
@@ -324,6 +460,7 @@ export class TelegramChannel implements Channel {
       { command: 'compact', description: 'Compact conversation context' },
       { command: 'new', description: 'Start new conversation' },
       { command: 'restart', description: 'Restart the bot' },
+      { command: 'auto_update', description: 'Check for updates and rebuild' },
       { command: 'ping', description: 'Check if bot is online' },
       { command: 'chatid', description: 'Show chat ID for registration' },
     ]);
@@ -391,8 +528,8 @@ export class TelegramChannel implements Channel {
       const inputFile = new InputFile(fileBuffer, fileName);
 
       await this.bot.api.sendDocument(numericId, inputFile, {
-        caption,
-        parse_mode: caption ? 'Markdown' : undefined,
+        caption: caption ? toMarkdownV2(caption) : undefined,
+        parse_mode: caption ? 'MarkdownV2' : undefined,
       });
       logger.info({ jid, filePath: fileName }, 'Telegram file sent');
     } catch (err) {

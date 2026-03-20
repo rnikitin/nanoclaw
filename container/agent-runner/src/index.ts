@@ -37,6 +37,7 @@ interface ContainerOutput {
   newSessionId?: string;
   error?: string;
   isThinking?: boolean;
+  isKeepalive?: boolean;
 }
 
 interface SessionEntry {
@@ -69,6 +70,37 @@ interface SDKUserMessage {
 
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
+const USAGE_FILE = '/workspace/ipc/usage.json';
+
+/** Usage info persisted to disk so the host can read it for /usage. */
+interface UsageData {
+  model?: string;
+  thinkingEnabled?: boolean;
+  totalCostUsd?: number;
+  numTurns?: number;
+  durationMs?: number;
+  modelUsage?: Record<string, {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadInputTokens: number;
+    cacheCreationInputTokens: number;
+    contextWindow: number;
+    maxOutputTokens: number;
+    costUSD: number;
+  }>;
+  updatedAt: number;
+}
+
+function saveUsageData(data: UsageData): void {
+  data.updatedAt = Date.now();
+  try {
+    fs.writeFileSync(USAGE_FILE, JSON.stringify(data));
+  } catch (err) {
+    log(`Failed to write usage file: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+const usageData: UsageData = { updatedAt: 0 };
 const IPC_POLL_MS = 500;
 
 /**
@@ -408,6 +440,8 @@ async function runQuery(
   let lastAssistantUuid: string | undefined;
   let messageCount = 0;
   let resultCount = 0;
+  let lastKeepaliveAt = 0;
+  const KEEPALIVE_INTERVAL_MS = 60_000;
 
   // Load global CLAUDE.md as additional system context (shared across all groups)
   const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
@@ -494,12 +528,25 @@ async function runQuery(
 
     if (message.type === 'system' && message.subtype === 'init') {
       newSessionId = message.session_id;
+      const initMsg = message as unknown as { model?: string };
+      if (initMsg.model) usageData.model = initMsg.model;
+      usageData.thinkingEnabled = containerInput.thinkingEnabled;
+      saveUsageData(usageData);
       log(`Session initialized: ${newSessionId}`);
     }
 
     if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
       const tn = message as { task_id: string; status: string; summary: string };
       log(`Task notification: task=${tn.task_id} status=${tn.status} summary=${tn.summary}`);
+    }
+
+    // Emit throttled keepalive on task_progress so the host knows we're still working
+    if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_progress') {
+      const now = Date.now();
+      if (now - lastKeepaliveAt >= KEEPALIVE_INTERVAL_MS) {
+        lastKeepaliveAt = now;
+        writeOutput({ status: 'success', result: null, isKeepalive: true, newSessionId });
+      }
     }
 
     if (message.type === 'result') {
@@ -511,6 +558,19 @@ async function runQuery(
         result: textResult || null,
         newSessionId
       });
+
+      // Persist latest result usage data for /usage command
+      const r = message as unknown as {
+        modelUsage?: Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number; contextWindow: number; maxOutputTokens: number; costUSD: number }>;
+        total_cost_usd?: number;
+        num_turns?: number;
+        duration_ms?: number;
+      };
+      if (r.modelUsage) usageData.modelUsage = r.modelUsage;
+      if (r.total_cost_usd != null) usageData.totalCostUsd = r.total_cost_usd;
+      if (r.num_turns != null) usageData.numTurns = r.num_turns;
+      if (r.duration_ms != null) usageData.durationMs = r.duration_ms;
+      saveUsageData(usageData);
     }
   }
 
@@ -563,61 +623,9 @@ async function main(): Promise<void> {
   // --- Slash command handling ---
   // Only known session slash commands are handled here. This prevents
   // accidental interception of user prompts that happen to start with '/'.
-  const KNOWN_SESSION_COMMANDS = new Set(['/compact', '/usage']);
+  const KNOWN_SESSION_COMMANDS = new Set(['/compact']);
   const trimmedPrompt = prompt.trim();
   const isSessionSlashCommand = KNOWN_SESSION_COMMANDS.has(trimmedPrompt);
-
-  // --- /usage: report context window usage from last result ---
-  if (trimmedPrompt === '/usage') {
-    log('Handling /usage command');
-    try {
-      for await (const message of query({
-        prompt: 'Respond with exactly: OK',
-        options: {
-          cwd: '/workspace/group',
-          resume: sessionId,
-          allowedTools: [],
-          env: sdkEnv,
-          permissionMode: 'bypassPermissions' as const,
-          allowDangerouslySkipPermissions: true,
-          settingSources: ['project', 'user'] as const,
-        },
-      })) {
-        if (message.type === 'system' && message.subtype === 'init') {
-          sessionId = message.session_id;
-        }
-        if (message.type === 'result' && message.subtype === 'success') {
-          const r = message as unknown as {
-            modelUsage: Record<string, { inputTokens: number; outputTokens: number; contextWindow: number; costUSD: number }>;
-            total_cost_usd: number;
-            usage: { input_tokens: number; output_tokens: number };
-          };
-          const entries = Object.entries(r.modelUsage || {});
-          if (entries.length > 0) {
-            const lines: string[] = [];
-            for (const [model, u] of entries) {
-              const pct = u.contextWindow > 0
-                ? ((u.inputTokens / u.contextWindow) * 100).toFixed(1)
-                : '?';
-              lines.push(
-                `*${model}*\n` +
-                `  Input: ${u.inputTokens.toLocaleString()} / ${u.contextWindow.toLocaleString()} tokens (${pct}%)\n` +
-                `  Output: ${u.outputTokens.toLocaleString()} tokens\n` +
-                `  Cost: $${u.costUSD.toFixed(4)}`
-              );
-            }
-            lines.push(`\nTotal cost: $${r.total_cost_usd?.toFixed(4) || '?'}`);
-            writeOutput({ status: 'success', result: lines.join('\n'), newSessionId: sessionId });
-          } else {
-            writeOutput({ status: 'success', result: 'No usage data available.', newSessionId: sessionId });
-          }
-        }
-      }
-    } catch (err) {
-      writeOutput({ status: 'error', result: null, error: `Usage check failed: ${err instanceof Error ? err.message : String(err)}` });
-    }
-    return;
-  }
 
   if (isSessionSlashCommand) {
     log(`Handling session command: ${trimmedPrompt}`);

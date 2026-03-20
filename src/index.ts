@@ -1,9 +1,15 @@
+import { exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 import {
   ASSISTANT_NAME,
+  CONTAINER_IMAGE,
   CREDENTIAL_PROXY_PORT,
+  DATA_DIR,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
   TIMEZONE,
@@ -23,6 +29,7 @@ import {
 } from './container-runner.js';
 import {
   cleanupOrphans,
+  CONTAINER_RUNTIME_BIN,
   ensureContainerRuntimeRunning,
   PROXY_BIND_HOST,
 } from './container-runtime.js';
@@ -152,6 +159,118 @@ export function _setRegisteredGroups(
 }
 
 /**
+ * Read persisted usage data and format a human-readable report.
+ */
+function formatUsageReport(groupFolder: string, thinkingEnabled?: boolean): string {
+  const usagePath = path.join(DATA_DIR, 'ipc', groupFolder, 'usage.json');
+  let data: {
+    model?: string;
+    thinkingEnabled?: boolean;
+    totalCostUsd?: number;
+    numTurns?: number;
+    durationMs?: number;
+    modelUsage?: Record<string, {
+      inputTokens: number; outputTokens: number;
+      cacheReadInputTokens: number; cacheCreationInputTokens: number;
+      contextWindow: number; maxOutputTokens: number; costUSD: number;
+    }>;
+    updatedAt?: number;
+  };
+
+  try {
+    data = JSON.parse(fs.readFileSync(usagePath, 'utf-8'));
+  } catch {
+    return 'No usage data yet. Send a message first.';
+  }
+
+  const lines: string[] = [];
+
+  // Model & mode
+  if (data.model) {
+    const thinking = data.thinkingEnabled ?? thinkingEnabled;
+    lines.push(`**Model:** ${data.model}${thinking ? ' (thinking ON)' : ''}`);
+  }
+
+  // Session usage from last query
+  const entries = Object.entries(data.modelUsage || {});
+  if (entries.length > 0) {
+    lines.push('');
+    lines.push('**Last query usage:**');
+    for (const [model, u] of entries) {
+      const pct = u.contextWindow > 0
+        ? ((u.inputTokens / u.contextWindow) * 100).toFixed(1)
+        : '?';
+      lines.push(
+        `  ${model}` +
+        `\n    Context: ${u.inputTokens.toLocaleString()} / ${u.contextWindow.toLocaleString()} tokens (${pct}%)` +
+        `\n    Output: ${u.outputTokens.toLocaleString()} / ${u.maxOutputTokens.toLocaleString()} tokens` +
+        (u.cacheReadInputTokens > 0 ? `\n    Cache read: ${u.cacheReadInputTokens.toLocaleString()} tokens` : '') +
+        (u.cacheCreationInputTokens > 0 ? `\n    Cache write: ${u.cacheCreationInputTokens.toLocaleString()} tokens` : '') +
+        `\n    Cost: $${u.costUSD.toFixed(4)}`,
+      );
+    }
+    if (data.totalCostUsd != null) {
+      lines.push(
+        `\n  **Total:** $${data.totalCostUsd.toFixed(4)}` +
+        (data.numTurns ? ` (${data.numTurns} turns)` : '') +
+        (data.durationMs ? ` in ${(data.durationMs / 1000).toFixed(1)}s` : ''),
+      );
+    }
+  }
+
+  // Rate limits (from credential proxy headers)
+  const rateLimitsPath = path.join(DATA_DIR, 'rate-limits.json');
+  let rateLimits: {
+    fiveHour?: { utilization: number; reset?: number };
+    sevenDay?: { utilization: number; reset?: number };
+    updatedAt?: number;
+  } | null = null;
+  try {
+    rateLimits = JSON.parse(fs.readFileSync(rateLimitsPath, 'utf-8'));
+  } catch { /* no rate limit data yet */ }
+
+  if (rateLimits && (rateLimits.fiveHour || rateLimits.sevenDay)) {
+    lines.push('');
+    lines.push('**Rate limits:**');
+
+    const formatWindow = (
+      label: string,
+      window?: { utilization: number; reset?: number },
+    ): string | null => {
+      if (!window) return null;
+      const pct = (window.utilization * 100).toFixed(1);
+      const emoji = window.utilization < 0.5 ? '🟢'
+        : window.utilization < 0.8 ? '🟡' : '🔴';
+      let line = `  ${emoji} ${label}: ${pct}% used`;
+      if (window.reset) {
+        const diffMs = window.reset * 1000 - Date.now();
+        if (diffMs > 0) {
+          const totalMin = Math.round(diffMs / 60000);
+          const days = Math.floor(totalMin / 1440);
+          const hrs = Math.floor((totalMin % 1440) / 60);
+          const mins = totalMin % 60;
+          const parts: string[] = [];
+          if (days > 0) parts.push(`${days}d`);
+          if (hrs > 0) parts.push(`${hrs}h`);
+          if (mins > 0 || parts.length === 0) parts.push(`${mins}m`);
+          line += ` (resets in ${parts.join(' ')})`;
+        }
+      }
+      return line;
+    };
+
+    const fiveLine = formatWindow('5h', rateLimits.fiveHour);
+    const sevenLine = formatWindow('7d', rateLimits.sevenDay);
+    if (fiveLine) lines.push(fiveLine);
+    if (sevenLine) lines.push(sevenLine);
+  } else {
+    lines.push('\n_Rate limit info not yet available_');
+  }
+
+  return lines.join('\n');
+}
+
+/**
  * Process all pending messages for a group.
  * Called by the GroupQueue when it's this group's turn.
  */
@@ -210,6 +329,83 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         logger.info('Restart requested via /restart command');
         process.exit(0);
       },
+      autoUpdate: async () => {
+        logger.info('Auto-update requested via /auto-update command');
+
+        // 1. Get current versions from the container image
+        const currentCmd = [
+          'npm ls -g @anthropic-ai/claude-code --depth=0 --json 2>/dev/null',
+          'npm ls -g agent-browser --depth=0 --json 2>/dev/null',
+          'gh --version 2>/dev/null | head -1',
+        ].join(' && echo "---SEP---" && ');
+        const { stdout: currentRaw } = await execAsync(
+          `${CONTAINER_RUNTIME_BIN} run --rm --entrypoint bash ${CONTAINER_IMAGE} -c '${currentCmd}'`,
+          { timeout: 60_000 },
+        );
+        const currentParts = currentRaw.split('---SEP---').map(s => s.trim());
+
+        const parseNpmVersion = (json: string, pkg: string): string => {
+          try {
+            const data = JSON.parse(json);
+            return data.dependencies?.[pkg]?.version || 'unknown';
+          } catch { return 'unknown'; }
+        };
+
+        const currentVersions = {
+          'claude-code': parseNpmVersion(currentParts[0], '@anthropic-ai/claude-code'),
+          'agent-browser': parseNpmVersion(currentParts[1], 'agent-browser'),
+          'gh': currentParts[2]?.match(/(\d+\.\d+\.\d+)/)?.[1] || 'unknown',
+        };
+
+        // 2. Get latest available versions
+        const [claudeLatest, abLatest, ghLatest] = await Promise.all([
+          execAsync('npm view @anthropic-ai/claude-code version').then(r => r.stdout.trim()).catch(() => 'unknown'),
+          execAsync('npm view agent-browser version').then(r => r.stdout.trim()).catch(() => 'unknown'),
+          execAsync('curl -sf https://api.github.com/repos/cli/cli/releases/latest').then(r => {
+            try { return JSON.parse(r.stdout).tag_name?.replace(/^v/, '') || 'unknown'; }
+            catch { return 'unknown'; }
+          }).catch(() => 'unknown'),
+        ]);
+
+        const latestVersions = {
+          'claude-code': claudeLatest,
+          'agent-browser': abLatest,
+          'gh': ghLatest,
+        };
+
+        // 3. Compare and build report
+        const packages = ['claude-code', 'agent-browser', 'gh'] as const;
+        const lines: string[] = [];
+        let needsRebuild = false;
+
+        for (const pkg of packages) {
+          const cur = currentVersions[pkg];
+          const lat = latestVersions[pkg];
+          if (cur === 'unknown' || lat === 'unknown') {
+            lines.push(`${pkg}: ${cur} (latest: ${lat})`);
+          } else if (cur !== lat) {
+            lines.push(`${pkg}: ${cur} → ${lat} ⬆`);
+            needsRebuild = true;
+          } else {
+            lines.push(`${pkg}: ${cur} ✓`);
+          }
+        }
+
+        const report = lines.join('\n');
+
+        if (!needsRebuild) {
+          return { report: `All packages up to date.\n\n${report}`, rebuilt: false };
+        }
+
+        // 4. Rebuild
+        const buildScript = path.join(process.cwd(), 'container', 'build.sh');
+        await execAsync(buildScript, { timeout: 300_000 });
+
+        return {
+          report: `Updates found, container rebuilt.\n\n${report}\n\nRestarting...`,
+          rebuilt: true,
+        };
+      },
       resetSession: () => {
         delete sessions[group.folder];
         deleteSession(group.folder);
@@ -226,6 +422,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         );
         return cfg.enableThinking!;
       },
+      getUsageReport: () =>
+        formatUsageReport(
+          group.folder,
+          group.containerConfig?.enableThinking,
+        ),
     },
   });
   if (cmdResult.handled) return cmdResult.success;
@@ -276,6 +477,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
   let outputSentToUser = false;
+  let lastThinkingText = '';
 
   const output = await runAgent(
     group,
@@ -283,15 +485,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     chatJid,
     imageAttachments,
     async (result) => {
+      // Keepalive from background tasks — reset idle timer, nothing else
+      if (result.isKeepalive) {
+        resetIdleTimer();
+        return;
+      }
       // Streaming output callback — called for each agent result
       if (result.isThinking && result.result) {
-        // Thinking progress — send as italic
+        // Thinking progress — send without italic to preserve markdown
         const text =
           typeof result.result === 'string'
             ? result.result
             : JSON.stringify(result.result);
         if (text.trim()) {
-          await channel.sendMessage(chatJid, `_${text.trim().slice(0, 2000)}_`);
+          lastThinkingText = text.trim();
+          await channel.sendMessage(chatJid, text.trim().slice(0, 2000));
         }
         resetIdleTimer();
       } else if (result.result) {
@@ -305,9 +513,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           { group: group.name },
           `Agent output: ${raw.slice(0, 200)}`,
         );
-        if (text) {
-          await channel.sendMessage(chatJid, text);
-          outputSentToUser = true;
+        if (text === lastThinkingText) {
+          // Skip — already sent as thinking progress
+          lastThinkingText = '';
+        } else {
+          lastThinkingText = '';
+          if (text) {
+            await channel.sendMessage(chatJid, text);
+            outputSentToUser = true;
+          }
         }
         // Only reset idle timer on actual results, not session-update markers (result: null)
         resetIdleTimer();
@@ -488,28 +702,28 @@ async function startMessageLoop(): Promise<void> {
           );
 
           if (loopCmdMsg) {
-            // Only close active container if the sender is authorized — otherwise an
-            // untrusted user could kill in-flight work by sending /compact (DoS).
-            // closeStdin no-ops internally when no container is active.
+            const cmd = extractSessionCommand(loopCmdMsg.content, TRIGGER_PATTERN);
+            // Host-only commands that don't need the container — skip closeStdin
+            const hostOnlyCommands = new Set(['/usage', '/thinking', '/new', '/restart']);
+            // Only close active container if the sender is authorized AND the
+            // command actually needs a fresh container (e.g. /compact).
             if (
+              !hostOnlyCommands.has(cmd || '') &&
               isSessionCommandAllowed(
                 isMainGroup,
-                loopCmdMsg.is_from_me === true,
+                !!loopCmdMsg.is_from_me,
               )
             ) {
               queue.closeStdin(chatJid);
             }
             // Enqueue so processGroupMessages handles auth + cursor advancement.
-            // Don't pipe via IPC — slash commands need a fresh container with
-            // string prompt (not MessageStream) for SDK recognition.
             queue.enqueueMessageCheck(chatJid);
             continue;
           }
           // --- End session command interception ---
 
           const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
-
-          // For non-main groups, only act on trigger messages.
+                    // For non-main groups, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
           // context when a trigger eventually arrives.
           if (needsTrigger) {
@@ -532,9 +746,26 @@ async function startMessageLoop(): Promise<void> {
           );
           const messagesToSend =
             allPending.length > 0 ? allPending : groupMessages;
+
+          // Check for session commands in pending messages before piping to container.
+          // This catches commands sent while a container is already active.
+          const pendingCmdMsg = messagesToSend.find(
+            (m) => extractSessionCommand(m.content, TRIGGER_PATTERN) !== null,
+          );
+          if (pendingCmdMsg) {
+            const pendingCmd = extractSessionCommand(pendingCmdMsg.content, TRIGGER_PATTERN);
+            const hostOnly = new Set(['/usage', '/thinking', '/new', '/restart']);
+            if (!hostOnly.has(pendingCmd || '') &&
+              isSessionCommandAllowed(isMainGroup, !!pendingCmdMsg.is_from_me)) {
+              queue.closeStdin(chatJid);
+            }
+            queue.enqueueMessageCheck(chatJid);
+            continue;
+          }
+
           const formatted = formatMessages(messagesToSend, TIMEZONE);
 
-          if (queue.sendMessage(chatJid, formatted)) {
+                    if (queue.sendMessage(chatJid, formatted)) {
             logger.debug(
               { chatJid, count: messagesToSend.length },
               'Piped messages to active container',

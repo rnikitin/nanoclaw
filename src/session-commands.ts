@@ -1,5 +1,10 @@
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
 import type { NewMessage } from './types.js';
 import { logger } from './logger.js';
+
+const execAsync = promisify(exec);
 
 /**
  * Extract a session slash command from a message, stripping the trigger prefix if present.
@@ -16,6 +21,7 @@ export function extractSessionCommand(
   if (text === '/restart') return '/restart';
   if (text === '/thinking') return '/thinking';
   if (text === '/new') return '/new';
+  if (text === '/auto-update') return '/auto-update';
   return null;
 }
 
@@ -55,6 +61,10 @@ export interface SessionCommandDeps {
   toggleThinking: () => boolean;
   /** Clear session so next message starts a fresh conversation. */
   resetSession: () => void;
+  /** Get formatted usage report from persisted usage data. */
+  getUsageReport: () => string;
+  /** Check for package updates, rebuild if needed. Returns report string and whether rebuild happened. */
+  autoUpdate: () => Promise<{ report: string; rebuilt: boolean }>;
 }
 
 function resultToText(result: string | object | null | undefined): string {
@@ -95,7 +105,7 @@ export async function handleSessionCommand(opts: {
 
   if (!command || !cmdMsg) return { handled: false };
 
-  if (!isSessionCommandAllowed(isMainGroup, cmdMsg.is_from_me === true)) {
+  if (!isSessionCommandAllowed(isMainGroup, !!cmdMsg.is_from_me)) {
     // DENIED: send denial if the sender would normally be allowed to interact,
     // then silently consume the command by advancing the cursor past it.
     // Trade-off: other messages in the same batch are also consumed (cursor is
@@ -110,6 +120,14 @@ export async function handleSessionCommand(opts: {
   // AUTHORIZED
   logger.info({ group: groupName, command }, 'Session command');
 
+  // /usage: host-only — read persisted usage data, no container needed
+  if (command === '/usage') {
+    const report = deps.getUsageReport();
+    await deps.sendMessage(report);
+    deps.advanceCursor(cmdMsg.timestamp);
+    return { handled: true, success: true };
+  }
+
   // /thinking: host-only toggle — no container needed
   if (command === '/thinking') {
     const enabled = deps.toggleThinking();
@@ -122,6 +140,26 @@ export async function handleSessionCommand(opts: {
   if (command === '/new') {
     deps.resetSession();
     await deps.sendMessage('New session started.');
+    deps.advanceCursor(cmdMsg.timestamp);
+    return { handled: true, success: true };
+  }
+
+  // /auto-update: check for updates, rebuild only if needed
+  if (command === '/auto-update') {
+    await deps.sendMessage('Checking for updates...');
+    try {
+      const { report, rebuilt } = await deps.autoUpdate();
+      await deps.sendMessage(report);
+      if (rebuilt) {
+        deps.advanceCursor(cmdMsg.timestamp);
+        setTimeout(() => deps.reboot(), 500);
+        return { handled: true, success: true };
+      }
+    } catch (err) {
+      await deps.sendMessage(
+        `Update check failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     deps.advanceCursor(cmdMsg.timestamp);
     return { handled: true, success: true };
   }
