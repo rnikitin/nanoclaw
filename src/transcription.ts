@@ -20,14 +20,11 @@ export async function transcribeAudio(
     formData.append('file', new Blob([buffer]), filename);
     formData.append('model', 'whisper-1');
 
-    const res = await fetch(
-      'https://api.openai.com/v1/audio/transcriptions',
-      {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${apiKey}` },
-        body: formData,
-      },
-    );
+    const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: formData,
+    });
 
     if (!res.ok) {
       const body = await res.text();

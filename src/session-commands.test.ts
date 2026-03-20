@@ -69,7 +69,9 @@ describe('extractSessionCommand', () => {
   });
 
   it('detects /auto-update with trigger prefix', () => {
-    expect(extractSessionCommand('@Andy /auto-update', trigger)).toBe('/auto-update');
+    expect(extractSessionCommand('@Andy /auto-update', trigger)).toBe(
+      '/auto-update',
+    );
   });
 });
 
@@ -118,7 +120,10 @@ function makeDeps(
     formatMessages: vi.fn().mockReturnValue('<formatted>'),
     canSenderInteract: vi.fn().mockReturnValue(true),
     reboot: vi.fn(),
-    autoUpdate: vi.fn().mockResolvedValue({ report: 'All packages up to date.\n\nclaude-code: 1.0 ✓', rebuilt: false }),
+    autoUpdate: vi.fn().mockResolvedValue({
+      report: 'All packages up to date.\n\nclaude-code: 1.0 ✓',
+      rebuilt: false,
+    }),
     toggleThinking: vi.fn().mockReturnValue(true),
     resetSession: vi.fn(),
     getUsageReport: vi.fn().mockReturnValue('No usage data yet.'),
@@ -344,7 +349,9 @@ describe('handleSessionCommand', () => {
     expect(result).toEqual({ handled: true, success: true });
     expect(deps.autoUpdate).toHaveBeenCalled();
     expect(deps.sendMessage).toHaveBeenCalledWith('Checking for updates...');
-    expect(deps.sendMessage).toHaveBeenCalledWith(expect.stringContaining('up to date'));
+    expect(deps.sendMessage).toHaveBeenCalledWith(
+      expect.stringContaining('up to date'),
+    );
     expect(deps.advanceCursor).toHaveBeenCalledWith('100');
     expect(deps.reboot).not.toHaveBeenCalled();
   });
@@ -366,7 +373,9 @@ describe('handleSessionCommand', () => {
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
-    expect(deps.sendMessage).toHaveBeenCalledWith(expect.stringContaining('rebuilt'));
+    expect(deps.sendMessage).toHaveBeenCalledWith(
+      expect.stringContaining('rebuilt'),
+    );
     vi.advanceTimersByTime(500);
     expect(deps.reboot).toHaveBeenCalled();
     vi.useRealTimers();
@@ -385,7 +394,9 @@ describe('handleSessionCommand', () => {
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
-    expect(deps.sendMessage).toHaveBeenCalledWith('Update check failed: network error');
+    expect(deps.sendMessage).toHaveBeenCalledWith(
+      'Update check failed: network error',
+    );
     expect(deps.reboot).not.toHaveBeenCalled();
   });
 

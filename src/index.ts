@@ -161,7 +161,10 @@ export function _setRegisteredGroups(
 /**
  * Read persisted usage data and format a human-readable report.
  */
-function formatUsageReport(groupFolder: string, thinkingEnabled?: boolean): string {
+function formatUsageReport(
+  groupFolder: string,
+  thinkingEnabled?: boolean,
+): string {
   const usagePath = path.join(DATA_DIR, 'ipc', groupFolder, 'usage.json');
   let data: {
     model?: string;
@@ -169,11 +172,18 @@ function formatUsageReport(groupFolder: string, thinkingEnabled?: boolean): stri
     totalCostUsd?: number;
     numTurns?: number;
     durationMs?: number;
-    modelUsage?: Record<string, {
-      inputTokens: number; outputTokens: number;
-      cacheReadInputTokens: number; cacheCreationInputTokens: number;
-      contextWindow: number; maxOutputTokens: number; costUSD: number;
-    }>;
+    modelUsage?: Record<
+      string,
+      {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadInputTokens: number;
+        cacheCreationInputTokens: number;
+        contextWindow: number;
+        maxOutputTokens: number;
+        costUSD: number;
+      }
+    >;
     updatedAt?: number;
   };
 
@@ -197,23 +207,30 @@ function formatUsageReport(groupFolder: string, thinkingEnabled?: boolean): stri
     lines.push('');
     lines.push('**Last query usage:**');
     for (const [model, u] of entries) {
-      const pct = u.contextWindow > 0
-        ? ((u.inputTokens / u.contextWindow) * 100).toFixed(1)
-        : '?';
+      const pct =
+        u.contextWindow > 0
+          ? ((u.inputTokens / u.contextWindow) * 100).toFixed(1)
+          : '?';
       lines.push(
         `  ${model}` +
-        `\n    Context: ${u.inputTokens.toLocaleString()} / ${u.contextWindow.toLocaleString()} tokens (${pct}%)` +
-        `\n    Output: ${u.outputTokens.toLocaleString()} / ${u.maxOutputTokens.toLocaleString()} tokens` +
-        (u.cacheReadInputTokens > 0 ? `\n    Cache read: ${u.cacheReadInputTokens.toLocaleString()} tokens` : '') +
-        (u.cacheCreationInputTokens > 0 ? `\n    Cache write: ${u.cacheCreationInputTokens.toLocaleString()} tokens` : '') +
-        `\n    Cost: $${u.costUSD.toFixed(4)}`,
+          `\n    Context: ${u.inputTokens.toLocaleString()} / ${u.contextWindow.toLocaleString()} tokens (${pct}%)` +
+          `\n    Output: ${u.outputTokens.toLocaleString()} / ${u.maxOutputTokens.toLocaleString()} tokens` +
+          (u.cacheReadInputTokens > 0
+            ? `\n    Cache read: ${u.cacheReadInputTokens.toLocaleString()} tokens`
+            : '') +
+          (u.cacheCreationInputTokens > 0
+            ? `\n    Cache write: ${u.cacheCreationInputTokens.toLocaleString()} tokens`
+            : '') +
+          `\n    Cost: $${u.costUSD.toFixed(4)}`,
       );
     }
     if (data.totalCostUsd != null) {
       lines.push(
         `\n  **Total:** $${data.totalCostUsd.toFixed(4)}` +
-        (data.numTurns ? ` (${data.numTurns} turns)` : '') +
-        (data.durationMs ? ` in ${(data.durationMs / 1000).toFixed(1)}s` : ''),
+          (data.numTurns ? ` (${data.numTurns} turns)` : '') +
+          (data.durationMs
+            ? ` in ${(data.durationMs / 1000).toFixed(1)}s`
+            : ''),
       );
     }
   }
@@ -227,7 +244,9 @@ function formatUsageReport(groupFolder: string, thinkingEnabled?: boolean): stri
   } | null = null;
   try {
     rateLimits = JSON.parse(fs.readFileSync(rateLimitsPath, 'utf-8'));
-  } catch { /* no rate limit data yet */ }
+  } catch {
+    /* no rate limit data yet */
+  }
 
   if (rateLimits && (rateLimits.fiveHour || rateLimits.sevenDay)) {
     lines.push('');
@@ -239,8 +258,12 @@ function formatUsageReport(groupFolder: string, thinkingEnabled?: boolean): stri
     ): string | null => {
       if (!window) return null;
       const pct = (window.utilization * 100).toFixed(1);
-      const emoji = window.utilization < 0.5 ? '🟢'
-        : window.utilization < 0.8 ? '🟡' : '🔴';
+      const emoji =
+        window.utilization < 0.5
+          ? '🟢'
+          : window.utilization < 0.8
+            ? '🟡'
+            : '🔴';
       let line = `  ${emoji} ${label}: ${pct}% used`;
       if (window.reset) {
         const diffMs = window.reset * 1000 - Date.now();
@@ -342,35 +365,53 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           `${CONTAINER_RUNTIME_BIN} run --rm --entrypoint bash ${CONTAINER_IMAGE} -c '${currentCmd}'`,
           { timeout: 60_000 },
         );
-        const currentParts = currentRaw.split('---SEP---').map(s => s.trim());
+        const currentParts = currentRaw.split('---SEP---').map((s) => s.trim());
 
         const parseNpmVersion = (json: string, pkg: string): string => {
           try {
             const data = JSON.parse(json);
             return data.dependencies?.[pkg]?.version || 'unknown';
-          } catch { return 'unknown'; }
+          } catch {
+            return 'unknown';
+          }
         };
 
         const currentVersions = {
-          'claude-code': parseNpmVersion(currentParts[0], '@anthropic-ai/claude-code'),
+          'claude-code': parseNpmVersion(
+            currentParts[0],
+            '@anthropic-ai/claude-code',
+          ),
           'agent-browser': parseNpmVersion(currentParts[1], 'agent-browser'),
-          'gh': currentParts[2]?.match(/(\d+\.\d+\.\d+)/)?.[1] || 'unknown',
+          gh: currentParts[2]?.match(/(\d+\.\d+\.\d+)/)?.[1] || 'unknown',
         };
 
         // 2. Get latest available versions
         const [claudeLatest, abLatest, ghLatest] = await Promise.all([
-          execAsync('npm view @anthropic-ai/claude-code version').then(r => r.stdout.trim()).catch(() => 'unknown'),
-          execAsync('npm view agent-browser version').then(r => r.stdout.trim()).catch(() => 'unknown'),
-          execAsync('curl -sf https://api.github.com/repos/cli/cli/releases/latest').then(r => {
-            try { return JSON.parse(r.stdout).tag_name?.replace(/^v/, '') || 'unknown'; }
-            catch { return 'unknown'; }
-          }).catch(() => 'unknown'),
+          execAsync('npm view @anthropic-ai/claude-code version')
+            .then((r) => r.stdout.trim())
+            .catch(() => 'unknown'),
+          execAsync('npm view agent-browser version')
+            .then((r) => r.stdout.trim())
+            .catch(() => 'unknown'),
+          execAsync(
+            'curl -sf https://api.github.com/repos/cli/cli/releases/latest',
+          )
+            .then((r) => {
+              try {
+                return (
+                  JSON.parse(r.stdout).tag_name?.replace(/^v/, '') || 'unknown'
+                );
+              } catch {
+                return 'unknown';
+              }
+            })
+            .catch(() => 'unknown'),
         ]);
 
         const latestVersions = {
           'claude-code': claudeLatest,
           'agent-browser': abLatest,
-          'gh': ghLatest,
+          gh: ghLatest,
         };
 
         // 3. Compare and build report
@@ -394,7 +435,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         const report = lines.join('\n');
 
         if (!needsRebuild) {
-          return { report: `All packages up to date.\n\n${report}`, rebuilt: false };
+          return {
+            report: `All packages up to date.\n\n${report}`,
+            rebuilt: false,
+          };
         }
 
         // 4. Rebuild
@@ -423,10 +467,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         return cfg.enableThinking!;
       },
       getUsageReport: () =>
-        formatUsageReport(
-          group.folder,
-          group.containerConfig?.enableThinking,
-        ),
+        formatUsageReport(group.folder, group.containerConfig?.enableThinking),
     },
   });
   if (cmdResult.handled) return cmdResult.success;
@@ -509,10 +550,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             : JSON.stringify(result.result);
         // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
         const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-        logger.info(
-          { group: group.name },
-          `Agent output: ${raw.length} chars`,
-        );
+        logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
         if (text === lastThinkingText) {
           // Skip — already sent as thinking progress
           lastThinkingText = '';
@@ -702,17 +740,22 @@ async function startMessageLoop(): Promise<void> {
           );
 
           if (loopCmdMsg) {
-            const cmd = extractSessionCommand(loopCmdMsg.content, TRIGGER_PATTERN);
+            const cmd = extractSessionCommand(
+              loopCmdMsg.content,
+              TRIGGER_PATTERN,
+            );
             // Host-only commands that don't need the container — skip closeStdin
-            const hostOnlyCommands = new Set(['/usage', '/thinking', '/new', '/restart']);
+            const hostOnlyCommands = new Set([
+              '/usage',
+              '/thinking',
+              '/new',
+              '/restart',
+            ]);
             // Only close active container if the sender is authorized AND the
             // command actually needs a fresh container (e.g. /compact).
             if (
               !hostOnlyCommands.has(cmd || '') &&
-              isSessionCommandAllowed(
-                isMainGroup,
-                !!loopCmdMsg.is_from_me,
-              )
+              isSessionCommandAllowed(isMainGroup, !!loopCmdMsg.is_from_me)
             ) {
               queue.closeStdin(chatJid);
             }
@@ -723,7 +766,7 @@ async function startMessageLoop(): Promise<void> {
           // --- End session command interception ---
 
           const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
-                    // For non-main groups, only act on trigger messages.
+          // For non-main groups, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
           // context when a trigger eventually arrives.
           if (needsTrigger) {
@@ -753,10 +796,20 @@ async function startMessageLoop(): Promise<void> {
             (m) => extractSessionCommand(m.content, TRIGGER_PATTERN) !== null,
           );
           if (pendingCmdMsg) {
-            const pendingCmd = extractSessionCommand(pendingCmdMsg.content, TRIGGER_PATTERN);
-            const hostOnly = new Set(['/usage', '/thinking', '/new', '/restart']);
-            if (!hostOnly.has(pendingCmd || '') &&
-              isSessionCommandAllowed(isMainGroup, !!pendingCmdMsg.is_from_me)) {
+            const pendingCmd = extractSessionCommand(
+              pendingCmdMsg.content,
+              TRIGGER_PATTERN,
+            );
+            const hostOnly = new Set([
+              '/usage',
+              '/thinking',
+              '/new',
+              '/restart',
+            ]);
+            if (
+              !hostOnly.has(pendingCmd || '') &&
+              isSessionCommandAllowed(isMainGroup, !!pendingCmdMsg.is_from_me)
+            ) {
               queue.closeStdin(chatJid);
             }
             queue.enqueueMessageCheck(chatJid);
@@ -765,7 +818,7 @@ async function startMessageLoop(): Promise<void> {
 
           const formatted = formatMessages(messagesToSend, TIMEZONE);
 
-                    if (queue.sendMessage(chatJid, formatted)) {
+          if (queue.sendMessage(chatJid, formatted)) {
             logger.debug(
               { chatJid, count: messagesToSend.length },
               'Piped messages to active container',

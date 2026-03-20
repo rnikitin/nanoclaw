@@ -70,8 +70,9 @@ export function toMarkdownV2(input: string): string {
   );
 
   // Italic _text_ (not inside words like some_var_name)
-  text = text.replace(/(?<![\\a-zA-Z0-9])_(.+?)_(?![a-zA-Z0-9])/gs, (_, inner) =>
-    hold('_' + escapeV2(inner) + '_'),
+  text = text.replace(
+    /(?<![\\a-zA-Z0-9])_(.+?)_(?![a-zA-Z0-9])/gs,
+    (_, inner) => hold('_' + escapeV2(inner) + '_'),
   );
 
   // Strikethrough ~~text~~ → ~text~
@@ -81,9 +82,7 @@ export function toMarkdownV2(input: string): string {
 
   // Links [text](url)
   text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) =>
-    hold(
-      '[' + escapeV2(label) + '](' + url.replace(/([)\\])/g, '\\$1') + ')',
-    ),
+    hold('[' + escapeV2(label) + '](' + url.replace(/([)\\])/g, '\\$1') + ')'),
   );
 
   // Escape all remaining special characters
