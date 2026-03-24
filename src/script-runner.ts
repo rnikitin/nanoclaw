@@ -4,7 +4,7 @@
  * These containers bypass GroupQueue — they have no timeout and aren't
  * affected by incoming messages.
  */
-import { ChildProcess, exec, spawn } from 'child_process';
+import { ChildProcess, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -57,16 +57,15 @@ export async function stopScript(taskId: string): Promise<void> {
     'Stopping script container',
   );
 
-  const { exec } = await import('child_process');
-  exec(stopContainer(script.containerName), { timeout: 15000 }, (err) => {
-    if (err) {
-      logger.warn(
-        { taskId, err },
-        'Graceful script stop failed, force killing',
-      );
-      script.process.kill('SIGKILL');
-    }
-  });
+  try {
+    stopContainer(script.containerName);
+  } catch (err) {
+    logger.warn(
+      { taskId, err },
+      'Graceful script stop failed, force killing',
+    );
+    script.process.kill('SIGKILL');
+  }
 }
 
 export async function stopAllScripts(): Promise<void> {
@@ -213,13 +212,11 @@ export async function runScriptTask(
                   { taskId: task.id },
                   'Force-stopping script container (did not exit after _close)',
                 );
-                exec(
-                  stopContainer(containerName),
-                  { timeout: 15000 },
-                  (err) => {
-                    if (err) container.kill('SIGKILL');
-                  },
-                );
+                try {
+                  stopContainer(containerName);
+                } catch {
+                  container.kill('SIGKILL');
+                }
               }, SCRIPT_FORCE_STOP_MS);
             }, SCRIPT_CLOSE_DELAY_MS);
           }

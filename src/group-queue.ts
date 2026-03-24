@@ -1,4 +1,4 @@
-import { ChildProcess, exec } from 'child_process';
+import { ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -250,15 +250,15 @@ export class GroupQueue {
       { groupJid, container: state.containerName },
       'Force-stopping container',
     );
-    exec(stopContainer(state.containerName), { timeout: 15000 }, (err) => {
-      if (err) {
-        logger.warn(
-          { groupJid, err },
-          'Graceful force-stop failed, sending SIGKILL',
-        );
-        state.process?.kill('SIGKILL');
-      }
-    });
+    try {
+      stopContainer(state.containerName);
+    } catch (err) {
+      logger.warn(
+        { groupJid, err },
+        'Graceful force-stop failed, sending SIGKILL',
+      );
+      state.process?.kill('SIGKILL');
+    }
   }
 
   private async runForGroup(
