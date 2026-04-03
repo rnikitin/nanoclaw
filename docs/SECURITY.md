@@ -42,7 +42,7 @@ private_key, .secret
 
 **Read-Only Project Root:**
 
-The main group's project root is mounted read-only. Writable paths the agent needs (group folder, IPC, `.claude/`) are mounted separately. This prevents the agent from modifying host application code (`src/`, `dist/`, `package.json`, etc.) which would bypass the sandbox entirely on next restart.
+The main group's project root is mounted read-only. Writable paths the agent needs (store, group folder, IPC, `.claude/`) are mounted separately. This prevents the agent from modifying host application code (`src/`, `dist/`, `package.json`, etc.) which would bypass the sandbox entirely on next restart. The `store/` directory is mounted read-write so the main agent can access the SQLite database directly.
 
 ### 3. Session Isolation
 
@@ -86,6 +86,7 @@ Real API credentials **never enter containers**. Instead, the host runs an HTTP 
 | Capability | Main Group | Non-Main Group |
 |------------|------------|----------------|
 | Project root access | `/workspace/project` (ro) | None |
+| Store (SQLite DB) | `/workspace/project/store` (rw) | None |
 | Group folder | `/workspace/group` (rw) | `/workspace/group` (rw) |
 | Global memory | Implicit via project | `/workspace/global` (ro) |
 | Additional mounts | Configurable | Read-only unless allowed |
