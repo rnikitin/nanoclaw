@@ -19,6 +19,10 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
+import {
+  getRunningScriptTaskIds,
+  runScriptTask,
+} from './script-runner.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 /**
@@ -132,6 +136,7 @@ async function runTask(
   // Update tasks snapshot for container to read (filtered by group)
   const isMain = group.isMain === true;
   const tasks = getAllTasks();
+  const runningIds = getRunningScriptTaskIds();
   writeTasksSnapshot(
     task.group_folder,
     isMain,
@@ -143,6 +148,8 @@ async function runTask(
       schedule_value: t.schedule_value,
       status: t.status,
       next_run: t.next_run,
+      execution_mode: t.execution_mode,
+      is_running: runningIds.has(t.id),
     })),
   );
 
@@ -154,68 +161,118 @@ async function runTask(
   const sessionId =
     task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
 
-  // After the task produces a result, close the container promptly.
-  // Tasks are single-turn — no need to wait IDLE_TIMEOUT (30 min) for the
-  // query loop to time out. A short delay handles any final MCP calls.
-  const TASK_CLOSE_DELAY_MS = 10000;
-  let closeTimer: ReturnType<typeof setTimeout> | null = null;
+  if (task.execution_mode === 'script') {
+    // Script mode: bypass GroupQueue, no timeout, independent container
+    try {
+      const output = await runScriptTask(task, group, isMain, sessionId);
 
-  const scheduleClose = () => {
-    if (closeTimer) return; // already scheduled
-    closeTimer = setTimeout(() => {
-      logger.debug({ taskId: task.id }, 'Closing task container after result');
-      deps.queue.closeStdin(task.chat_jid);
-    }, TASK_CLOSE_DELAY_MS);
-  };
-
-  try {
-    const output = await runContainerAgent(
-      group,
-      {
-        prompt: task.prompt,
-        sessionId,
-        groupFolder: task.group_folder,
-        chatJid: task.chat_jid,
-        isMain,
-        isScheduledTask: true,
-        assistantName: ASSISTANT_NAME,
-      },
-      (proc, containerName) =>
-        deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
-      async (streamedOutput: ContainerOutput) => {
-        if (streamedOutput.result) {
-          result = streamedOutput.result;
-          // Forward result to user (sendMessage handles formatting)
-          await deps.sendMessage(task.chat_jid, streamedOutput.result);
-          scheduleClose();
+      if (output.status === 'error') {
+        error = output.error || 'Unknown error';
+      }
+      if (output.result) {
+        result = output.result;
+        try {
+          await deps.sendMessage(task.chat_jid, output.result);
+        } catch (sendErr) {
+          logger.error(
+            { taskId: task.id, error: sendErr },
+            'Failed to send script task result',
+          );
         }
-        if (streamedOutput.status === 'success') {
-          deps.queue.notifyIdle(task.chat_jid);
-          scheduleClose(); // Close promptly even when result is null (e.g. IPC-only tasks)
-        }
-        if (streamedOutput.status === 'error') {
-          error = streamedOutput.error || 'Unknown error';
-        }
-      },
-    );
+      }
 
-    if (closeTimer) clearTimeout(closeTimer);
-
-    if (output.status === 'error') {
-      error = output.error || 'Unknown error';
-    } else if (output.result) {
-      // Result was already forwarded to the user via the streaming callback above
-      result = output.result;
+      logger.info(
+        { taskId: task.id, durationMs: Date.now() - startTime },
+        'Script task completed',
+      );
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+      logger.error({ taskId: task.id, error }, 'Script task failed');
     }
+  } else {
+    // Agent mode: standard container through GroupQueue
+    // After the task produces a result, close the container promptly.
+    // Tasks are single-turn — no need to wait IDLE_TIMEOUT (30 min) for the
+    // query loop to time out. A short delay handles any final MCP calls.
+    const TASK_CLOSE_DELAY_MS = 10_000;
+    const TASK_FORCE_STOP_MS = 60_000;
+    let closeTimer: ReturnType<typeof setTimeout> | null = null;
+    let forceStopTimer: ReturnType<typeof setTimeout> | null = null;
 
-    logger.info(
-      { taskId: task.id, durationMs: Date.now() - startTime },
-      'Task completed',
-    );
-  } catch (err) {
-    if (closeTimer) clearTimeout(closeTimer);
-    error = err instanceof Error ? err.message : String(err);
-    logger.error({ taskId: task.id, error }, 'Task failed');
+    const scheduleClose = () => {
+      if (closeTimer) return; // already scheduled
+      closeTimer = setTimeout(() => {
+        logger.debug({ taskId: task.id }, 'Closing task container after result');
+        deps.queue.closeStdin(task.chat_jid);
+        // Safety net: force-stop if container doesn't exit after _close
+        forceStopTimer = setTimeout(() => {
+          logger.warn(
+            { taskId: task.id },
+            'Force-stopping task container (did not exit after _close)',
+          );
+          deps.queue.forceStop(task.chat_jid);
+        }, TASK_FORCE_STOP_MS);
+      }, TASK_CLOSE_DELAY_MS);
+    };
+
+    try {
+      const output = await runContainerAgent(
+        group,
+        {
+          prompt: task.prompt,
+          sessionId,
+          groupFolder: task.group_folder,
+          chatJid: task.chat_jid,
+          isMain,
+          isScheduledTask: true,
+          assistantName: ASSISTANT_NAME,
+        },
+        (proc, containerName) =>
+          deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
+        async (streamedOutput: ContainerOutput) => {
+          if (streamedOutput.result) {
+            result = streamedOutput.result;
+            scheduleClose(); // Always schedule close before sendMessage
+            try {
+              await deps.sendMessage(task.chat_jid, streamedOutput.result);
+            } catch (err) {
+              logger.error(
+                { taskId: task.id, error: err },
+                'Failed to send task result',
+              );
+            }
+          }
+          if (streamedOutput.status === 'success') {
+            deps.queue.notifyIdle(task.chat_jid);
+            scheduleClose(); // Close promptly even when result is null (e.g. IPC-only tasks)
+          }
+          if (streamedOutput.status === 'error') {
+            error = streamedOutput.error || 'Unknown error';
+          }
+        },
+      );
+
+      if (closeTimer) clearTimeout(closeTimer);
+      if (forceStopTimer) clearTimeout(forceStopTimer);
+
+      if (output.status === 'error') {
+        error = output.error || 'Unknown error';
+      }
+      if (output.result) {
+        // Result was already forwarded to the user via the streaming callback above
+        result = output.result;
+      }
+
+      logger.info(
+        { taskId: task.id, durationMs: Date.now() - startTime },
+        'Task completed',
+      );
+    } catch (err) {
+      if (closeTimer) clearTimeout(closeTimer);
+      if (forceStopTimer) clearTimeout(forceStopTimer);
+      error = err instanceof Error ? err.message : String(err);
+      logger.error({ taskId: task.id, error }, 'Task failed');
+    }
   }
 
   const durationMs = Date.now() - startTime;
@@ -262,9 +319,16 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
           continue;
         }
 
-        deps.queue.enqueueTask(currentTask.chat_jid, currentTask.id, () =>
-          runTask(currentTask, deps),
-        );
+        if (currentTask.execution_mode === 'script') {
+          // Script tasks bypass GroupQueue — spawn independently
+          runTask(currentTask, deps).catch((err) =>
+            logger.error({ taskId: currentTask.id, err }, 'Script task error'),
+          );
+        } else {
+          deps.queue.enqueueTask(currentTask.chat_jid, currentTask.id, () =>
+            runTask(currentTask, deps),
+          );
+        }
       }
     } catch (err) {
       logger.error({ err }, 'Error in scheduler loop');

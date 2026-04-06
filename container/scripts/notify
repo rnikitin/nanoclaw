@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Send a message to the current group via IPC (works inside NanoClaw containers).
+#
+# Usage:
+#   notify <message>
+#   notify -f <file> [caption]
+#
+# Examples:
+#   notify "Backtest complete: sharpe 1.42"
+#   notify -f results/report.csv "Daily report"
+#
+# Environment (set automatically by agent-runner):
+#   NANOCLAW_CHAT_JID      — target group JID
+#   NANOCLAW_GROUP_FOLDER  — group folder name
+
+set -euo pipefail
+
+IPC_DIR="/workspace/ipc/messages"
+CHAT_JID="${NANOCLAW_CHAT_JID:?NANOCLAW_CHAT_JID not set — must run inside a NanoClaw container}"
+
+mkdir -p "$IPC_DIR"
+FILENAME="$(date +%s%N)-$$.json"
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: notify <message>" >&2
+  echo "       notify -f <file> [caption]" >&2
+  exit 1
+fi
+
+if [[ "$1" == "-f" ]]; then
+  shift
+  FILE_PATH="${1:?missing file path}"
+  CAPTION="${2:-}"
+  node -e "
+    const fs = require('fs');
+    const data = {type:'file', chatJid:process.argv[1], filePath:process.argv[2], caption:process.argv[3]||undefined};
+    const tmp = '$IPC_DIR/$FILENAME.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(data));
+    fs.renameSync(tmp, '$IPC_DIR/$FILENAME');
+  " "$CHAT_JID" "$FILE_PATH" "$CAPTION"
+else
+  TEXT="$*"
+  node -e "
+    const fs = require('fs');
+    const data = {type:'message', chatJid:process.argv[1], text:process.argv[2]};
+    const tmp = '$IPC_DIR/$FILENAME.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(data));
+    fs.renameSync(tmp, '$IPC_DIR/$FILENAME');
+  " "$CHAT_JID" "$TEXT"
+fi
+
+echo "Sent (picked up within ~1s)"

@@ -60,6 +60,10 @@ COPY agent-runner/ ./
 COPY skills/pdf-reader/pdf-reader /usr/local/bin/pdf-reader
 RUN chmod +x /usr/local/bin/pdf-reader
 
+# Install notify CLI (send messages to group via IPC)
+COPY scripts/notify /usr/local/bin/notify
+RUN chmod +x /usr/local/bin/notify
+
 # Build TypeScript
 RUN npm run build
 

@@ -101,7 +101,11 @@ server.tool(
 
 server.tool(
   'schedule_task',
-  `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
+  `Schedule a recurring or one-time task. Returns the task ID for future reference. To modify an existing task, use update_task instead.
+
+EXECUTION MODE:
+\u2022 "agent" (default): Task runs as a full Claude agent with access to all tools. Standard 30-min timeout. Shares the group container queue with messages.
+\u2022 "script": Task runs in an independent container with NO timeout. The container is not interrupted by user messages and doesn't block message processing. Use for long-running pipelines, background processing, or tasks that may take hours. The prompt is still sent to a Claude agent — use Bash tool for scripts. The \`notify\` CLI is available inside the container to send messages: \`notify "message"\` or \`notify -f file.csv "caption"\`.
 
 CONTEXT MODE - Choose based on task type:
 \u2022 "group": Task runs in the group's conversation context, with access to chat history. Use for tasks that need context about ongoing discussions, user preferences, or recent interactions.
@@ -127,6 +131,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
     schedule_type: z.enum(['cron', 'interval', 'once']).describe('cron=recurring at specific times, interval=recurring every N ms, once=run once at specific time'),
     schedule_value: z.string().describe('cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: local timestamp like "2026-02-01T15:30:00" (no Z suffix!)'),
     context_mode: z.enum(['group', 'isolated']).default('group').describe('group=runs with chat history and memory, isolated=fresh session (include context in prompt)'),
+    execution_mode: z.enum(['agent', 'script']).default('agent').describe('agent=standard container with timeout, script=independent container with no timeout (not interrupted by messages)'),
     target_group_jid: z.string().optional().describe('(Main group only) JID of the group to schedule the task for. Defaults to the current group.'),
   },
   async (args) => {
@@ -176,6 +181,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
       schedule_type: args.schedule_type,
       schedule_value: args.schedule_value,
       context_mode: args.context_mode || 'group',
+      execution_mode: args.execution_mode || 'agent',
       targetJid,
       createdBy: groupFolder,
       timestamp: new Date().toISOString(),
@@ -213,8 +219,11 @@ server.tool(
 
       const formatted = tasks
         .map(
-          (t: { id: string; prompt: string; schedule_type: string; schedule_value: string; status: string; next_run: string }) =>
-            `- [${t.id}] ${t.prompt.slice(0, 50)}... (${t.schedule_type}: ${t.schedule_value}) - ${t.status}, next: ${t.next_run || 'N/A'}`,
+          (t: { id: string; prompt: string; schedule_type: string; schedule_value: string; status: string; next_run: string; execution_mode?: string; is_running?: boolean }) => {
+            const mode = t.execution_mode === 'script' ? ' [script]' : '';
+            const running = t.is_running ? ' (RUNNING)' : '';
+            return `- [${t.id}] ${t.prompt.slice(0, 50)}... (${t.schedule_type}: ${t.schedule_value}) - ${t.status}${mode}${running}, next: ${t.next_run || 'N/A'}`;
+          },
         )
         .join('\n');
 

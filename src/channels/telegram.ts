@@ -172,12 +172,13 @@ export class TelegramChannel implements Channel {
         '/new',
         '/auto-update',
         '/auto_update',
+        '/dreaming',
       ];
       // Strip @bot_username suffix from commands (Telegram adds it in groups)
       const cmdBase = ctx.message.text.trim().replace(/@\S+/, '').trim();
       if (
         ctx.message.text.startsWith('/') &&
-        !NANOCLAW_COMMANDS.includes(cmdBase)
+        !NANOCLAW_COMMANDS.some(cmd => cmdBase === cmd || cmdBase.startsWith(cmd + ' '))
       ) {
         return;
       }
@@ -353,7 +354,47 @@ export class TelegramChannel implements Channel {
       // Fallback: store as placeholder
       storeNonText(ctx, '[Photo]');
     });
-    this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
+    this.bot.on('message:video', async (ctx) => {
+      const video = ctx.message.video;
+      const sizeBytes = video?.file_size || 0;
+      const MAX_DOWNLOAD_SIZE = 20 * 1024 * 1024;
+      const name = video?.file_name || `video_${ctx.message.message_id}.mp4`;
+
+      if (sizeBytes > MAX_DOWNLOAD_SIZE) {
+        storeNonText(ctx, `[Video: ${name} (${(sizeBytes / 1024 / 1024).toFixed(1)} MB — too large)]`);
+        return;
+      }
+
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) {
+        storeNonText(ctx, `[Video: ${name}]`);
+        return;
+      }
+
+      try {
+        const file = await ctx.getFile();
+        const downloadUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
+
+        const groupDir = resolveGroupFolderPath(group.folder);
+        const attachDir = path.join(groupDir, 'attachments');
+        fs.mkdirSync(attachDir, { recursive: true });
+
+        const localPath = path.join(attachDir, name);
+        const res = await fetch(downloadUrl);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buffer = Buffer.from(await res.arrayBuffer());
+        fs.writeFileSync(localPath, buffer);
+
+        const containerPath = `/workspace/group/attachments/${name}`;
+        const caption = ctx.message.caption ? ` — ${ctx.message.caption}` : '';
+        storeNonText(ctx, `[Video: ${name} → ${containerPath}${caption}]`);
+        logger.info({ chatJid, name, localPath }, 'Telegram video downloaded');
+      } catch (err) {
+        logger.error({ chatJid, name, err }, 'Failed to download Telegram video');
+        storeNonText(ctx, `[Video: ${name}]`);
+      }
+    });
     this.bot.on('message:voice', async (ctx) => {
       const chatJid = `tg:${ctx.chat.id}`;
       const group = this.opts.registeredGroups()[chatJid];
@@ -405,18 +446,20 @@ export class TelegramChannel implements Channel {
     this.bot.on('message:document', async (ctx) => {
       const doc = ctx.message.document;
       const name = doc?.file_name || 'file';
-      const isPdf =
-        doc?.mime_type === 'application/pdf' ||
-        name.toLowerCase().endsWith('.pdf');
+      const sizeBytes = doc?.file_size || 0;
+      const MAX_DOWNLOAD_SIZE = 20 * 1024 * 1024; // 20 MB (Telegram Bot API limit)
 
-      if (!isPdf) {
-        storeNonText(ctx, `[Document: ${name}]`);
+      if (sizeBytes > MAX_DOWNLOAD_SIZE) {
+        storeNonText(ctx, `[Document: ${name} (${(sizeBytes / 1024 / 1024).toFixed(1)} MB — too large)]`);
         return;
       }
 
       const chatJid = `tg:${ctx.chat.id}`;
       const group = this.opts.registeredGroups()[chatJid];
-      if (!group) return;
+      if (!group) {
+        storeNonText(ctx, `[Document: ${name}]`);
+        return;
+      }
 
       try {
         const file = await ctx.getFile();
@@ -433,10 +476,10 @@ export class TelegramChannel implements Channel {
         fs.writeFileSync(localPath, buffer);
 
         const containerPath = `/workspace/group/attachments/${name}`;
-        storeNonText(ctx, `[PDF: ${name} → ${containerPath}]`);
-        logger.info({ chatJid, name, localPath }, 'Telegram PDF downloaded');
+        storeNonText(ctx, `[File: ${name} → ${containerPath}]`);
+        logger.info({ chatJid, name, localPath }, 'Telegram document downloaded');
       } catch (err) {
-        logger.error({ chatJid, name, err }, 'Failed to download Telegram PDF');
+        logger.error({ chatJid, name, err }, 'Failed to download Telegram document');
         storeNonText(ctx, `[Document: ${name}]`);
       }
     });
@@ -460,6 +503,7 @@ export class TelegramChannel implements Channel {
       { command: 'new', description: 'Start new conversation' },
       { command: 'restart', description: 'Restart the bot' },
       { command: 'auto_update', description: 'Check for updates and rebuild' },
+      { command: 'dreaming', description: 'Memory consolidation (status/run/light/deep)' },
       { command: 'ping', description: 'Check if bot is online' },
       { command: 'chatid', description: 'Show chat ID for registration' },
     ]);

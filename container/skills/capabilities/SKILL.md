@@ -45,11 +45,11 @@ Read the allowed tools from your SDK configuration. You always have access to:
 
 The NanoClaw MCP server exposes these tools (via `mcp__nanoclaw__*` prefix):
 - `send_message` — send a message to the user/group
-- `schedule_task` — schedule a recurring or one-time task
-- `list_tasks` — list scheduled tasks
-- `pause_task` — pause a scheduled task
+- `schedule_task` — schedule a recurring or one-time task (supports `execution_mode: "script"` for long-running pipelines with no timeout)
+- `list_tasks` — list scheduled tasks (shows execution mode and running status)
+- `pause_task` — pause a scheduled task (stops running script containers)
 - `resume_task` — resume a paused task
-- `cancel_task` — cancel and delete a task
+- `cancel_task` — cancel and delete a task (stops running script containers)
 - `update_task` — update an existing task
 - `register_group` — register a new chat/group (main only)
 
@@ -59,7 +59,10 @@ Check for executable tools in the container:
 
 ```bash
 which agent-browser 2>/dev/null && echo "agent-browser: available" || echo "agent-browser: not found"
+which notify 2>/dev/null && echo "notify: available" || echo "notify: not found"
 ```
+
+- `notify` — send messages/files to the chat from bash scripts (`notify "text"` or `notify -f file.csv "caption"`)
 
 ### 5. Group info
 

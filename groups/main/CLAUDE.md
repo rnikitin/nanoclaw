@@ -244,3 +244,12 @@ When scheduling tasks for other groups, use the `target_group_jid` parameter wit
 - `schedule_task(prompt: "...", schedule_type: "cron", schedule_value: "0 9 * * 1", target_group_jid: "120363336345536173@g.us")`
 
 The task will run in that group's context with access to their files and memory.
+
+### Script Execution Mode
+
+For long-running pipelines, use `execution_mode: "script"`:
+- `schedule_task(prompt: "Run the daily backtest pipeline...", execution_mode: "script", schedule_type: "cron", schedule_value: "0 9 * * *")`
+- The container runs with full Claude SDK but **no timeout** — pipelines can run for hours
+- Independent of message handling — user messages don't kill the script, and messages are still processed normally
+- Use `notify` inside bash scripts to send progress/results to the chat
+- `pause_task` or `cancel_task` will stop a running script container

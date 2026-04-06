@@ -61,7 +61,7 @@ interface VolumeMount {
   readonly: boolean;
 }
 
-function buildVolumeMounts(
+export function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
 ): VolumeMount[] {
@@ -171,7 +171,7 @@ function buildVolumeMounts(
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
   const groupIpcDir = resolveGroupIpcPath(group.folder);
-  for (const sub of ['messages', 'tasks', 'input']) {
+  for (const sub of ['messages', 'tasks', 'input', 'canvas']) {
     fs.mkdirSync(path.join(groupIpcDir, sub), { recursive: true });
   }
   mounts.push({
@@ -204,6 +204,43 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Persistent package caches (pip, npm) so libraries survive container restarts
+  const pkgCacheDir = path.join(DATA_DIR, 'sessions', group.folder, 'pkg-cache');
+  const pipCacheDir = path.join(pkgCacheDir, 'pip');
+  const npmCacheDir = path.join(pkgCacheDir, 'npm');
+  fs.mkdirSync(pipCacheDir, { recursive: true });
+  fs.mkdirSync(npmCacheDir, { recursive: true });
+  mounts.push(
+    {
+      hostPath: pipCacheDir,
+      containerPath: '/home/node/.local',
+      readonly: false,
+    },
+    {
+      hostPath: npmCacheDir,
+      containerPath: '/home/node/.npm-global',
+      readonly: false,
+    },
+  );
+
+  // QMD search index and binary (read-only, shared across all groups)
+  const qmdCacheDir = path.join(process.env.HOME || '/root', '.cache', 'qmd');
+  if (fs.existsSync(qmdCacheDir)) {
+    mounts.push({
+      hostPath: qmdCacheDir,
+      containerPath: '/home/node/.cache/qmd',
+      readonly: true,
+    });
+  }
+  const qmdBinDir = '/usr/lib/node_modules/@tobilu/qmd';
+  if (fs.existsSync(qmdBinDir)) {
+    mounts.push({
+      hostPath: qmdBinDir,
+      containerPath: '/usr/lib/node_modules/@tobilu/qmd',
+      readonly: true,
+    });
+  }
+
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
@@ -217,11 +254,11 @@ function buildVolumeMounts(
   return mounts;
 }
 
-function buildContainerArgs(
+export function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
 ): string[] {
-  const args: string[] = ['run', '-i', '--rm', '--name', containerName];
+  const args: string[] = ['run', '-i', '--rm', '--memory=8g', '--name', containerName];
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
@@ -251,6 +288,10 @@ function buildContainerArgs(
   if (ghToken) {
     args.push('-e', `GITHUB_TOKEN=${ghToken}`);
   }
+
+  // Pass Redis/Postgres connection info for containers that need them
+  args.push('-e', `REDIS_URL=redis://${CONTAINER_HOST_GATEWAY}:6379`);
+  args.push('-e', `DATABASE_URL=postgresql://tronn3:tronn3@${CONTAINER_HOST_GATEWAY}:5432/tronn3`);
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
@@ -381,7 +422,14 @@ export async function runContainerAgent(
             resetTimeout();
             // Call onOutput for all markers (including null results)
             // so idle timers start even for "silent" query completions.
-            outputChain = outputChain.then(() => onOutput(parsed));
+            outputChain = outputChain
+              .then(() => onOutput(parsed))
+              .catch((err) => {
+                logger.error(
+                  { group: group.name, error: err },
+                  'Error in onOutput callback',
+                );
+              });
           } catch (err) {
             logger.warn(
               { group: group.name, error: err },
@@ -474,13 +522,25 @@ export async function runContainerAgent(
             { group: group.name, containerName, duration, code },
             'Container timed out after output (idle cleanup)',
           );
-          outputChain.then(() => {
-            resolve({
-              status: 'success',
-              result: null,
-              newSessionId,
+          outputChain
+            .then(() => {
+              resolve({
+                status: 'success',
+                result: null,
+                newSessionId,
+              });
+            })
+            .catch((err) => {
+              logger.error(
+                { group: group.name, error: err },
+                'outputChain rejected on close (timeout idle cleanup)',
+              );
+              resolve({
+                status: 'error',
+                result: null,
+                error: 'Output callback failed during idle cleanup',
+              });
             });
-          });
           return;
         }
 
@@ -588,17 +648,29 @@ export async function runContainerAgent(
 
       // Streaming mode: wait for output chain to settle, return completion marker
       if (onOutput) {
-        outputChain.then(() => {
-          logger.info(
-            { group: group.name, duration, newSessionId },
-            'Container completed (streaming mode)',
-          );
-          resolve({
-            status: 'success',
-            result: null,
-            newSessionId,
+        outputChain
+          .then(() => {
+            logger.info(
+              { group: group.name, duration, newSessionId },
+              'Container completed (streaming mode)',
+            );
+            resolve({
+              status: 'success',
+              result: null,
+              newSessionId,
+            });
+          })
+          .catch((err) => {
+            logger.error(
+              { group: group.name, error: err },
+              'outputChain rejected on close',
+            );
+            resolve({
+              status: 'error',
+              result: null,
+              error: 'Output callback failed during container close',
+            });
           });
-        });
         return;
       }
 
@@ -677,6 +749,8 @@ export function writeTasksSnapshot(
     schedule_value: string;
     status: string;
     next_run: string | null;
+    execution_mode?: string;
+    is_running?: boolean;
   }>,
 ): void {
   // Write filtered tasks to the group's IPC directory

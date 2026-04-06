@@ -8,7 +8,9 @@ import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
+import { stopScript } from './script-runner.js';
 import { RegisteredGroup } from './types.js';
+import { handleCanvasIpc } from './canvas-server.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
@@ -82,7 +84,13 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
-                  await deps.sendMessage(data.chatJid, data.text);
+                  await deps.sendMessage(data.chatJid, data.text).catch(
+                    (err) =>
+                      logger.warn(
+                        { chatJid: data.chatJid, sourceGroup, err },
+                        'IPC message delivery failed (non-fatal)',
+                      ),
+                  );
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },
                     'IPC message sent',
@@ -103,11 +111,17 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
+                  // Normalize container absolute paths to relative
+                  // Container mounts group folder at /workspace/group/
+                  let relFilePath = data.filePath;
+                  if (relFilePath.startsWith('/workspace/group/')) {
+                    relFilePath = relFilePath.slice('/workspace/group/'.length);
+                  }
                   // Resolve path relative to the group's workspace
                   const hostPath = path.resolve(
                     GROUPS_DIR,
                     sourceGroup,
-                    data.filePath,
+                    relFilePath,
                   );
                   // Security: ensure the resolved path stays within the group dir
                   const groupBase = path.resolve(GROUPS_DIR, sourceGroup);
@@ -122,7 +136,13 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       'IPC file not found',
                     );
                   } else {
-                    await deps.sendFile(data.chatJid, hostPath, data.caption);
+                    await deps.sendFile(data.chatJid, hostPath, data.caption).catch(
+                      (err) =>
+                        logger.warn(
+                          { chatJid: data.chatJid, sourceGroup, file: data.filePath, err },
+                          'IPC file delivery failed (non-fatal)',
+                        ),
+                    );
                     logger.info(
                       {
                         chatJid: data.chatJid,
@@ -191,6 +211,64 @@ export function startIpcWatcher(deps: IpcDeps): void {
       } catch (err) {
         logger.error({ err, sourceGroup }, 'Error reading IPC tasks directory');
       }
+
+      // Process canvas updates from this group's IPC directory
+      const canvasDir = path.join(ipcBaseDir, sourceGroup, 'canvas');
+      try {
+        if (fs.existsSync(canvasDir)) {
+          const canvasFiles = fs
+            .readdirSync(canvasDir)
+            .filter((f) => f.endsWith('.json'));
+          for (const file of canvasFiles) {
+            const filePath = path.join(canvasDir, file);
+            try {
+              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              if (data.canvas_id && data.action) {
+                // Find the chatJid for this group
+                let chatJid = data.chatJid || '';
+                if (!chatJid) {
+                  for (const [jid, group] of Object.entries(registeredGroups)) {
+                    if (group.folder === sourceGroup) {
+                      chatJid = jid;
+                      break;
+                    }
+                  }
+                }
+                const result = handleCanvasIpc(sourceGroup, chatJid, data);
+                if (result.url && chatJid) {
+                  // Send canvas URL to chat
+                  const host = process.env.CANVAS_HOST || 'ark.nikitin.me';
+                  const url = `https://${host}${result.url}`;
+                  await deps.sendMessage(
+                    chatJid,
+                    `${data.title || 'Canvas'}: ${url}`,
+                  ).catch((err) =>
+                    logger.warn({ sourceGroup, err }, 'Failed to send canvas URL'),
+                  );
+                }
+                logger.info(
+                  { canvas_id: data.canvas_id, action: data.action, sourceGroup },
+                  'Canvas IPC processed',
+                );
+              }
+              fs.unlinkSync(filePath);
+            } catch (err) {
+              logger.error(
+                { file, sourceGroup, err },
+                'Error processing IPC canvas',
+              );
+              const errorDir = path.join(ipcBaseDir, 'errors');
+              fs.mkdirSync(errorDir, { recursive: true });
+              fs.renameSync(
+                filePath,
+                path.join(errorDir, `${sourceGroup}-${file}`),
+              );
+            }
+          }
+        }
+      } catch (err) {
+        logger.error({ err, sourceGroup }, 'Error reading IPC canvas directory');
+      }
     }
 
     setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
@@ -208,6 +286,7 @@ export async function processTaskIpc(
     schedule_type?: string;
     schedule_value?: string;
     context_mode?: string;
+    execution_mode?: string;
     groupFolder?: string;
     chatJid?: string;
     targetJid?: string;
@@ -301,6 +380,8 @@ export async function processTaskIpc(
           data.context_mode === 'group' || data.context_mode === 'isolated'
             ? data.context_mode
             : 'isolated';
+        const executionMode =
+          data.execution_mode === 'script' ? 'script' : 'agent';
         createTask({
           id: taskId,
           group_folder: targetFolder,
@@ -309,12 +390,13 @@ export async function processTaskIpc(
           schedule_type: scheduleType,
           schedule_value: data.schedule_value,
           context_mode: contextMode,
+          execution_mode: executionMode,
           next_run: nextRun,
           status: 'active',
           created_at: new Date().toISOString(),
         });
         logger.info(
-          { taskId, sourceGroup, targetFolder, contextMode },
+          { taskId, sourceGroup, targetFolder, contextMode, executionMode },
           'Task created via IPC',
         );
         deps.onTasksChanged();
@@ -326,6 +408,12 @@ export async function processTaskIpc(
         const task = getTaskById(data.taskId);
         if (task && (isMain || task.group_folder === sourceGroup)) {
           updateTask(data.taskId, { status: 'paused' });
+          // Stop running script container if this is a script task
+          if (task.execution_mode === 'script') {
+            stopScript(data.taskId).catch((err) =>
+              logger.warn({ taskId: data.taskId, err }, 'Failed to stop script on pause'),
+            );
+          }
           logger.info(
             { taskId: data.taskId, sourceGroup },
             'Task paused via IPC',
@@ -363,6 +451,12 @@ export async function processTaskIpc(
       if (data.taskId) {
         const task = getTaskById(data.taskId);
         if (task && (isMain || task.group_folder === sourceGroup)) {
+          // Stop running script container if this is a script task
+          if (task.execution_mode === 'script') {
+            stopScript(data.taskId).catch((err) =>
+              logger.warn({ taskId: data.taskId, err }, 'Failed to stop script on cancel'),
+            );
+          }
           deleteTask(data.taskId);
           logger.info(
             { taskId: data.taskId, sourceGroup },

@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Send a notification message to a NanoClaw group via IPC.
+#
+# Usage:
+#   notify <group> <message>
+#   notify <group> -f <file> [caption]
+#
+# Groups (aliases):
+#   trading-room, trading   -> telegram_trading-room
+#   family-office, family   -> telegram_family-office
+#   main                    -> telegram_main
+#   Or use the full folder name directly (e.g. telegram_trading-room)
+#
+# Examples:
+#   notify trading-room "Backtest finished: sharpe 1.42"
+#   notify trading "Price alert: BTC > 100k"
+#   notify trading-room -f results/report.csv "Daily report"
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+BASE_DIR="$(dirname "$SCRIPT_DIR")"
+IPC_DIR="$BASE_DIR/data/ipc"
+
+# --- Group aliases → folder + JID ---
+resolve_group() {
+  case "$1" in
+    trading-room|trading)
+      GROUP_FOLDER="telegram_trading-room"
+      CHAT_JID="tg:-1003860680039"
+      ;;
+    family-office|family)
+      GROUP_FOLDER="telegram_family-office"
+      CHAT_JID="tg:-1003882256640"
+      ;;
+    main)
+      GROUP_FOLDER="telegram_main"
+      CHAT_JID="tg:main"
+      ;;
+    telegram_*)
+      # Full folder name passed directly — look up JID from available_groups
+      GROUP_FOLDER="$1"
+      local ag="$IPC_DIR/telegram_main/available_groups.json"
+      if [[ -f "$ag" ]]; then
+        CHAT_JID=$(python3 -c "
+import json, sys
+with open('$ag') as f:
+    for g in json.load(f)['groups']:
+        if g.get('name','').lower().replace(' ','-') == '${1#telegram_}'.lower():
+            print(g['jid']); sys.exit(0)
+print(''); sys.exit(1)
+" 2>/dev/null || true)
+      fi
+      if [[ -z "${CHAT_JID:-}" ]]; then
+        echo "Error: cannot resolve JID for folder '$1'. Use a known alias or add it to this script." >&2
+        exit 1
+      fi
+      ;;
+    *)
+      echo "Unknown group: $1" >&2
+      echo "Known aliases: trading-room, trading, family-office, family, main" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# --- Main ---
+if [[ $# -lt 2 ]]; then
+  echo "Usage: notify <group> <message>" >&2
+  echo "       notify <group> -f <file> [caption]" >&2
+  exit 1
+fi
+
+resolve_group "$1"
+shift
+
+MSG_DIR="$IPC_DIR/$GROUP_FOLDER/messages"
+mkdir -p "$MSG_DIR"
+
+FILENAME="$(date +%s%N)-$$.json"
+
+if [[ "$1" == "-f" ]]; then
+  # File mode
+  shift
+  FILE_PATH="${1:?missing file path}"
+  CAPTION="${2:-}"
+  cat > "$MSG_DIR/$FILENAME" <<JSON
+{"type":"file","chatJid":"$CHAT_JID","filePath":"$FILE_PATH","caption":"$CAPTION"}
+JSON
+else
+  # Text message mode
+  TEXT="$*"
+  # Escape JSON special chars
+  TEXT=$(printf '%s' "$TEXT" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read())[1:-1])')
+  cat > "$MSG_DIR/$FILENAME" <<JSON
+{"type":"message","chatJid":"$CHAT_JID","text":"$TEXT"}
+JSON
+fi
+
+echo "Queued to $GROUP_FOLDER (picked up within ~1s)"

@@ -1,8 +1,9 @@
-import { ChildProcess } from 'child_process';
+import { ChildProcess, exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
+import { stopContainer } from './container-runtime.js';
 import { logger } from './logger.js';
 
 interface QueuedTask {
@@ -191,6 +192,28 @@ export class GroupQueue {
     } catch {
       // ignore
     }
+  }
+
+  /**
+   * Force-stop the active container for a group (safety net for hung containers).
+   */
+  forceStop(groupJid: string): void {
+    const state = this.getGroup(groupJid);
+    if (!state.active || !state.containerName) return;
+
+    logger.warn(
+      { groupJid, container: state.containerName },
+      'Force-stopping container',
+    );
+    exec(stopContainer(state.containerName), { timeout: 15000 }, (err) => {
+      if (err) {
+        logger.warn(
+          { groupJid, err },
+          'Graceful force-stop failed, sending SIGKILL',
+        );
+        state.process?.kill('SIGKILL');
+      }
+    });
   }
 
   private async runForGroup(

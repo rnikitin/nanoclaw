@@ -73,6 +73,17 @@ describe('extractSessionCommand', () => {
       '/auto-update',
     );
   });
+
+  it('strips Telegram bot suffix from commands', () => {
+    expect(extractSessionCommand('/usage@mybot', trigger)).toBe('/usage');
+    expect(extractSessionCommand('/compact@ArkBot', trigger)).toBe('/compact');
+    expect(extractSessionCommand('/restart@some_bot', trigger)).toBe(
+      '/restart',
+    );
+    expect(
+      extractSessionCommand('@Andy /thinking@mybot', trigger),
+    ).toBe('/thinking');
+  });
 });
 
 describe('isSessionCommandAllowed', () => {

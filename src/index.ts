@@ -15,6 +15,8 @@ import {
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
+import { startCanvasServer, setResolveChatJid } from './canvas-server.js';
+import { startDreamingScheduler, stopDreamingScheduler } from './memory/dreaming-scheduler.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
 import {
@@ -71,6 +73,10 @@ import {
   handleSessionCommand,
   isSessionCommandAllowed,
 } from './session-commands.js';
+import {
+  getRunningScriptTaskIds,
+  stopAllScripts,
+} from './script-runner.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
@@ -323,6 +329,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     missedMessages,
     isMainGroup,
     groupName: group.name,
+    groupFolder: group.folder,
     triggerPattern: TRIGGER_PATTERN,
     timezone: TIMEZONE,
     deps: {
@@ -470,7 +477,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         formatUsageReport(group.folder, group.containerConfig?.enableThinking),
     },
   });
-  if (cmdResult.handled) return cmdResult.success;
+  if (cmdResult.handled) {
+    // Advance cursor past these messages so they don't get re-processed
+    lastAgentTimestamp[chatJid] =
+      missedMessages[missedMessages.length - 1].timestamp;
+    saveState();
+    return cmdResult.success;
+  }
   // --- End session command interception ---
 
   // For non-main groups, check if trigger is required and present
@@ -540,7 +553,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
             : JSON.stringify(result.result);
         if (text.trim()) {
           lastThinkingText = text.trim();
-          await channel.sendMessage(chatJid, text.trim().slice(0, 2000));
+          try {
+            await channel.sendMessage(chatJid, text.trim().slice(0, 2000));
+          } catch (err) {
+            logger.error(
+              { group: group.name, error: err },
+              'Failed to send thinking update',
+            );
+          }
         }
         resetIdleTimer();
       } else if (result.result) {
@@ -557,8 +577,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         } else {
           lastThinkingText = '';
           if (text) {
-            await channel.sendMessage(chatJid, text);
-            outputSentToUser = true;
+            try {
+              await channel.sendMessage(chatJid, text);
+              outputSentToUser = true;
+            } catch (err) {
+              logger.error(
+                { group: group.name, error: err },
+                'Failed to send agent output',
+              );
+            }
           }
         }
         // Only reset idle timer on actual results, not session-update markers (result: null)
@@ -613,6 +640,7 @@ async function runAgent(
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
+  const runningIds = getRunningScriptTaskIds();
   writeTasksSnapshot(
     group.folder,
     isMain,
@@ -624,6 +652,8 @@ async function runAgent(
       schedule_value: t.schedule_value,
       status: t.status,
       next_run: t.next_run,
+      execution_mode: t.execution_mode,
+      is_running: runningIds.has(t.id),
     })),
   );
 
@@ -748,7 +778,6 @@ async function startMessageLoop(): Promise<void> {
             const hostOnlyCommands = new Set([
               '/usage',
               '/thinking',
-              '/new',
               '/restart',
             ]);
             // Only close active container if the sender is authorized AND the
@@ -803,7 +832,6 @@ async function startMessageLoop(): Promise<void> {
             const hostOnly = new Set([
               '/usage',
               '/thinking',
-              '/new',
               '/restart',
             ]);
             if (
@@ -881,6 +909,20 @@ async function main(): Promise<void> {
     PROXY_BIND_HOST,
   );
 
+  // Wire up canvas chatJid resolver
+  setResolveChatJid((group: string) => {
+    for (const [jid, g] of Object.entries(registeredGroups)) {
+      if (g.folder === group) return jid;
+    }
+    return null;
+  });
+
+  // Start Canvas HTTP server (web UI ↔ agent interaction)
+  const canvasServer = await startCanvasServer().catch((err) => {
+    logger.warn({ err }, 'Canvas server failed to start (non-fatal)');
+    return null;
+  });
+
   // Send a lifecycle notification to all main groups
   const notifyMainGroups = async (text: string) => {
     for (const [jid, group] of Object.entries(registeredGroups)) {
@@ -897,6 +939,9 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'Shutdown signal received');
     await notifyMainGroups(`${ASSISTANT_NAME} is restarting...`);
     proxyServer.close();
+    canvasServer?.close();
+    stopDreamingScheduler();
+    await stopAllScripts();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
@@ -1053,6 +1098,7 @@ async function main(): Promise<void> {
       writeGroupsSnapshot(gf, im, ag, rj),
     onTasksChanged: () => {
       const tasks = getAllTasks();
+      const runningIds = getRunningScriptTaskIds();
       const taskRows = tasks.map((t) => ({
         id: t.id,
         groupFolder: t.group_folder,
@@ -1061,6 +1107,8 @@ async function main(): Promise<void> {
         schedule_value: t.schedule_value,
         status: t.status,
         next_run: t.next_run,
+        execution_mode: t.execution_mode,
+        is_running: runningIds.has(t.id),
       }));
       for (const group of Object.values(registeredGroups)) {
         writeTasksSnapshot(group.folder, group.isMain === true, taskRows);
@@ -1069,10 +1117,15 @@ async function main(): Promise<void> {
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
-  startMessageLoop().catch((err) => {
-    logger.fatal({ err }, 'Message loop crashed unexpectedly');
-    process.exit(1);
-  });
+  startDreamingScheduler();
+  const startLoop = () => {
+    startMessageLoop().catch((err) => {
+      logger.error({ err }, 'Message loop crashed — restarting in 5s');
+      messageLoopRunning = false;
+      setTimeout(startLoop, 5000);
+    });
+  };
+  startLoop();
 
   await notifyMainGroups(`${ASSISTANT_NAME} is online.`);
 }

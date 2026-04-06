@@ -16,12 +16,15 @@ export function extractSessionCommand(
 ): string | null {
   let text = content.trim();
   text = text.replace(triggerPattern, '').trim();
-  if (text === '/compact') return '/compact';
-  if (text === '/usage') return '/usage';
-  if (text === '/restart') return '/restart';
-  if (text === '/thinking') return '/thinking';
-  if (text === '/new') return '/new';
-  if (text === '/auto-update') return '/auto-update';
+  // Strip Telegram bot suffix (e.g. /usage@botname → /usage)
+  const command = text.replace(/@\S+$/, '').trim();
+  if (command === '/compact') return '/compact';
+  if (command === '/usage') return '/usage';
+  if (command === '/restart') return '/restart';
+  if (command === '/thinking') return '/thinking';
+  if (command === '/new') return '/new';
+  if (command === '/auto-update') return '/auto-update';
+  if (command.startsWith('/dreaming')) return command;
   return null;
 }
 
@@ -83,6 +86,7 @@ export async function handleSessionCommand(opts: {
   missedMessages: NewMessage[];
   isMainGroup: boolean;
   groupName: string;
+  groupFolder?: string;
   triggerPattern: RegExp;
   timezone: string;
   deps: SessionCommandDeps;
@@ -159,6 +163,83 @@ export async function handleSessionCommand(opts: {
       await deps.sendMessage(
         `Update check failed: ${err instanceof Error ? err.message : String(err)}`,
       );
+    }
+    deps.advanceCursor(cmdMsg.timestamp);
+    return { handled: true, success: true };
+  }
+
+  // /dreaming: run memory consolidation
+  if (command.startsWith('/dreaming')) {
+    const subcommand = command.replace('/dreaming', '').trim() || 'status';
+    try {
+      const { dreamCycle, lightSleep, deepSleep } = await import('./memory/dreaming.js');
+      const { resolveGroupFolderPath } = await import('./group-folder.js');
+      const gDir = opts.groupFolder
+        ? resolveGroupFolderPath(opts.groupFolder)
+        : '';
+
+      if (subcommand === 'status') {
+        const { loadRecallStore } = await import('./memory/recall-tracker.js');
+        const store = loadRecallStore(gDir);
+        const entryCount = Object.keys(store.entries).length;
+        await deps.sendMessage(
+          `Dreaming status:\n` +
+          `• Recall entries: ${entryCount}\n` +
+          `• Last updated: ${store.lastUpdated || 'never'}\n` +
+          `• Group: ${groupName}`,
+        );
+      } else if (subcommand === 'run') {
+        await deps.sendMessage('Running full dream cycle (light → REM → deep)...');
+        const result = dreamCycle(gDir);
+        await deps.sendMessage(
+          `Dream cycle complete:\n` +
+          `• Light: ${result.light.candidates} candidates, ${result.light.deduplicated} deduplicated\n` +
+          `• REM: ${result.rem.patterns} patterns found\n` +
+          `• Deep: ${result.deep.promoted} promoted, ${result.deep.rejected} rejected`,
+        );
+      } else if (subcommand === 'light') {
+        const result = lightSleep(gDir);
+        await deps.sendMessage(`Light sleep: ${result.candidates} candidates, ${result.deduplicated} deduplicated`);
+      } else if (subcommand === 'deep') {
+        const result = deepSleep(gDir);
+        await deps.sendMessage(`Deep sleep: ${result.promoted} promoted, ${result.rejected} rejected`);
+      } else if (subcommand === 'seed') {
+        await deps.sendMessage('Seeding recall store from files + message history...');
+        const { seedRecallStore, seedFromMessages } = await import('./memory/seed.js');
+        const { join: pathJoin } = await import('path');
+
+        // Seed from files
+        const fileResult = seedRecallStore(gDir);
+
+        // Seed from SQLite messages
+        const dbPath = pathJoin(process.cwd(), 'store', 'messages.db');
+        // Find chat_jid for this group
+        let msgResult = { filesProcessed: 0, chunksCreated: 0, entriesAdded: 0, skippedExisting: 0 };
+        try {
+          const { existsSync: exists } = await import('fs');
+          if (exists(dbPath)) {
+            const folder = opts.groupFolder || '';
+            const { DatabaseSync } = await import('node:sqlite' as any);
+            const db = new (DatabaseSync as any)(dbPath, { readOnly: true });
+            const rows = db.prepare('SELECT jid FROM registered_groups WHERE folder = ?').all(folder);
+            db.close();
+            if (rows.length > 0) {
+              msgResult = seedFromMessages(gDir, dbPath, (rows[0] as any).jid);
+            }
+          }
+        } catch (e) { /* ignore DB errors */ }
+
+        await deps.sendMessage(
+          `Seed complete:\n` +
+          `• Files: ${fileResult.filesProcessed} processed, ${fileResult.entriesAdded} entries added\n` +
+          `• Messages: ${msgResult.filesProcessed} days, ${msgResult.entriesAdded} entries added\n` +
+          `• Skipped: ${fileResult.skippedExisting + msgResult.skippedExisting} existing`,
+        );
+      } else {
+        await deps.sendMessage('Usage: /dreaming [status|run|light|deep|seed]');
+      }
+    } catch (err) {
+      await deps.sendMessage(`Dreaming error: ${err instanceof Error ? err.message : String(err)}`);
     }
     deps.advanceCursor(cmdMsg.timestamp);
     return { handled: true, success: true };

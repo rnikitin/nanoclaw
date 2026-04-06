@@ -47,12 +47,181 @@ Files you create are saved in `/workspace/group/`. Use this for notes, research,
 
 ## Memory
 
-The `conversations/` folder contains searchable history of past conversations. Use this to recall context from previous sessions.
+### Memory Search
+
+You have a `memory_search` tool (MCP) that searches across your group's memory files and past conversations using semantic search. **Always use it before answering questions about past work, decisions, people, preferences, or history.**
+
+```
+memory_search(query: "what we decided about TRONN5 strategy")
+memory_search(query: "Roman's preferences", scope: "memory")
+memory_search(query: "last week discussion about backtesting", scope: "conversations")
+```
+
+Parameters:
+- `query` — natural language search query
+- `mode` — "search" (fast keyword, default), "vsearch" (semantic), "query" (best quality, hybrid)
+- `scope` — "memory" (memory files only), "conversations" (past chats), "all" (both, default)
+- `limit` — max results (default: 6)
+
+Every search is automatically tracked for the dreaming system — frequently recalled memories get promoted to long-term storage.
+
+### Memory Files
+
+The `memory/` folder contains your group's persistent knowledge:
+- `index.md` — master index
+- `context.md` — live session state (update every session)
+- `projects/` — project details
+- `knowledge/` — permanent lessons
+- `MEMORY.md` — auto-promoted long-term insights (from dreaming)
+- `YYYY-MM-DD.md` — daily notes
+
+The `conversations/` folder contains searchable history of past conversations.
 
 When you learn something important:
 - Create files for structured data (e.g., `customers.md`, `preferences.md`)
 - Split files larger than 500 lines into folders
 - Keep an index in your memory for the files you create
+
+## Databases
+
+PostgreSQL and Redis are available to all agents:
+
+- **PostgreSQL**: `$DATABASE_URL` (postgresql://tronn3:tronn3@host.docker.internal:5432/tronn3)
+- **Redis**: `$REDIS_URL` (redis://host.docker.internal:6379)
+
+Rules:
+- Each group MUST create its own schema (e.g., `CREATE SCHEMA IF NOT EXISTS trading_room;`) and use it exclusively. Do not write to the `public` schema.
+- Install clients as needed: `pip install psycopg2-binary redis` or `npm install pg redis`
+- Use env vars (`$DATABASE_URL`, `$REDIS_URL`) — never hardcode credentials.
+
+## Jesse Trading Framework
+
+Jesse is installed at OS level and running as a systemd service:
+
+- **API/UI**: `http://host.docker.internal:9000` (from containers) or `http://localhost:9000` (from host)
+- **UI**: `https://jesse.nikitin.me` (or `http://host.docker.internal:9000` from containers)
+- **Project dir**: `/root/nanoclaw/groups/telegram_algotrading-room/jesse-bot/` (strategies in `strategies/`)
+- **Venv**: `/opt/jesse-venv/`
+- **CLI**: `/opt/jesse-venv/bin/jesse`
+- **DB**: PostgreSQL `jesse_db` (same server as main DB)
+
+Use Jesse for backtesting, live trading, and strategy development. Strategies go in the jesse-bot/strategies/ folder.
+
+## Web Hosting
+
+Each agent has a web directory for serving dashboards, reports, and interactive pages:
+
+- Write files to `/workspace/group/www/` — they are served via nginx
+- Public base URL: `https://ark.nikitin.me/$NANOCLAW_GROUP_FOLDER/`
+- To get your full URL in bash: `echo "https://ark.nikitin.me/$NANOCLAW_GROUP_FOLDER/filename.html"`
+- Example: put `index.html` in `/workspace/group/www/` → accessible at `https://ark.nikitin.me/$NANOCLAW_GROUP_FOLDER/index.html`
+- You can create a `.nginx.conf` file in `/workspace/group/www/` to customize your location block (rewrites, proxy_pass, headers, try_files, etc.)
+- For dynamic backends (FastAPI, Express, etc.): bind to a port and proxy_pass to it from `.nginx.conf`
+
+## Background Scripts
+
+You can schedule long-running pipelines that run independently in their own container, with no timeout:
+
+- Use `schedule_task` with `execution_mode: "script"` — the container runs without timeout and isn't interrupted by user messages
+- The prompt is sent to a full Claude agent — use Bash and other tools as usual
+- Script containers are independent of the message queue — users can keep chatting while scripts run
+- Use the `notify` CLI inside bash scripts to send messages to the chat:
+  - `notify "Pipeline complete: sharpe 1.42"` — send a text message
+  - `notify -f results/report.csv "Daily report"` — send a file attachment
+- Scripts have full access to your workspace at `/workspace/group/`
+- `pause_task` or `cancel_task` will stop a running script container
+
+## Canvas — Interactive Web Apps
+
+You can create interactive web applications (canvases) that users open in a browser. The canvas runs React code you generate — full freedom, any UI.
+
+*How it works:*
+1. You publish a JSON message to Redis channel `nanoclaw:canvas`
+2. The user gets a link: `https://ark.nikitin.me/canvas/$NANOCLAW_GROUP_FOLDER/<canvas_id>`
+3. The browser renders your React/JSX code with live WebSocket connection
+4. User interactions can either be handled locally (self-contained) or sent back to you via WebSocket
+
+*Creating a canvas:*
+
+```bash
+redis-cli -u $REDIS_URL PUBLISH nanoclaw:canvas '{
+  "canvas_id": "my-app",
+  "action": "create",
+  "group": "'$NANOCLAW_GROUP_FOLDER'",
+  "title": "My App",
+  "jsx": "function App({ state, send }) { ... your React code ... }",
+  "state": { "initial": "state" }
+}'
+```
+
+*Updating a canvas:*
+
+```bash
+redis-cli -u $REDIS_URL PUBLISH nanoclaw:canvas '{
+  "canvas_id": "my-app",
+  "action": "update",
+  "state": { "count": 42 }
+}'
+```
+
+You can also update the JSX code itself by including `"jsx": "..."` in the update.
+
+*Your JSX component receives:*
+- `state` — current state object (from create/update messages)
+- `send(data)` — function to send events back through WebSocket (optional)
+- Full React API: `useState`, `useEffect`, `useRef`, `useCallback`
+
+*Guidelines:*
+- Make canvases self-contained when possible — embed all logic in JSX (game AI, calculations, UI state)
+- Use `useState` for local UI state, `state`/`send` for communication with the agent
+- JSX is compiled in the browser via Sucrase — standard React/JSX syntax works
+- Style with inline styles (no CSS files)
+- The canvas URL is: `https://ark.nikitin.me/canvas/$NANOCLAW_GROUP_FOLDER/<canvas_id>`
+- Send the link to the user after creating
+- Use `action: "close"` to close a canvas when done
+
+*Alternative: file-based IPC (slower, polling):*
+Write a JSON file to `/workspace/ipc/canvas/<filename>.json` with the same format. The host polls and processes it. Use Redis for real-time updates.
+
+## Plans — Always via Canvas
+
+When you create a plan that needs user approval, ALWAYS present it through Canvas for interactive review. Never dump a plan as plain text in chat.
+
+*Workflow:*
+1. Write the plan as a markdown file in `/workspace/group/plans/`
+2. Send it to Canvas for review using the helper script:
+
+```bash
+python3 /workspace/global/skills/canvas-plan/publish-plan.py \
+  --file /workspace/group/plans/my-plan.md \
+  --title "Plan: My Feature"
+```
+
+3. The script prints a canvas URL — send it to the user
+4. User reads the rendered plan, adds inline comments, then either approves or submits feedback
+5. You receive a `<canvas-event>` with `type: "approve"` or `type: "submit"` containing their comments
+6. If feedback — revise the plan, publish again. If approved — execute.
+
+*Plan format (markdown):*
+```
+# Title
+
+**Date:** YYYY-MM-DD
+**Status:** Draft
+
+## Purpose
+What problem this solves and why.
+
+## Approach
+How we'll solve it.
+
+## Steps
+1. Step one
+2. Step two
+
+## Risks / Open Questions
+- ...
+```
 
 ## Message Formatting
 

@@ -415,7 +415,8 @@ async function runQuery(
     }
   }
 
-  // Poll IPC for follow-up messages and _close sentinel during the query
+  // Poll IPC for follow-up messages and _close sentinel during the query.
+  // Scheduled tasks only check for _close — they must not process chat messages.
   let ipcPolling = true;
   let closedDuringQuery = false;
   const pollIpcDuringQuery = () => {
@@ -427,10 +428,12 @@ async function runQuery(
       ipcPolling = false;
       return;
     }
-    const messages = drainIpcInput();
-    for (const text of messages) {
-      log(`Piping IPC message into active query (${text.length} chars)`);
-      stream.push(text);
+    if (!containerInput.isScheduledTask) {
+      const messages = drainIpcInput();
+      for (const text of messages) {
+        log(`Piping IPC message into active query (${text.length} chars)`);
+        stream.push(text);
+      }
     }
     setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
   };
@@ -484,7 +487,8 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        'mcp__memory__*'
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -498,6 +502,14 @@ async function runQuery(
             NANOCLAW_CHAT_JID: containerInput.chatJid,
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+          },
+        },
+        memory: {
+          command: 'node',
+          args: [path.join(path.dirname(mcpServerPath), 'memory-mcp-stdio.js')],
+          env: {
+            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+            NANOCLAW_GROUP_DIR: '/workspace/group',
           },
         },
       },
@@ -598,7 +610,13 @@ async function main(): Promise<void> {
 
   // Credentials are injected by the host's credential proxy via ANTHROPIC_BASE_URL.
   // No real secrets exist in the container environment.
-  const sdkEnv: Record<string, string | undefined> = { ...process.env };
+  const sdkEnv: Record<string, string | undefined> = {
+    ...process.env,
+    // Expose IPC context to Bash tool so scripts (e.g. `notify`) can send messages
+    NANOCLAW_CHAT_JID: containerInput.chatJid,
+    NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+    NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+  };
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
@@ -739,6 +757,14 @@ async function main(): Promise<void> {
       // idle timer and cause a 30-min delay before the next _close).
       if (queryResult.closedDuringQuery) {
         log('Close sentinel consumed during query, exiting');
+        break;
+      }
+
+      // Scheduled tasks are single-turn — exit after first query completes.
+      // Without this, the container would wait for IPC messages and accidentally
+      // process chat messages meant for the group's conversational agent.
+      if (containerInput.isScheduledTask) {
+        log('Scheduled task query completed, exiting');
         break;
       }
 

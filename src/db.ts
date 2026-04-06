@@ -93,6 +93,15 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
+  // Add execution_mode column if it doesn't exist (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE scheduled_tasks ADD COLUMN execution_mode TEXT DEFAULT 'agent'`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
   // Add is_bot_message column if it doesn't exist (migration for existing DBs)
   try {
     database.exec(
@@ -368,8 +377,8 @@ export function createTask(
 ): void {
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, next_run, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, execution_mode, next_run, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
@@ -379,6 +388,7 @@ export function createTask(
     task.schedule_type,
     task.schedule_value,
     task.context_mode || 'isolated',
+    task.execution_mode || 'agent',
     task.next_run,
     task.status,
     task.created_at,
@@ -597,7 +607,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.trigger,
     group.added_at,
     group.containerConfig ? JSON.stringify(group.containerConfig) : null,
-    group.requiresTrigger === undefined ? 0 : group.requiresTrigger ? 1 : 0,
+    group.requiresTrigger === false ? 0 : 1,
     group.isMain ? 1 : 0,
   );
 }
