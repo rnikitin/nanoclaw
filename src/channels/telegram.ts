@@ -178,7 +178,9 @@ export class TelegramChannel implements Channel {
       const cmdBase = ctx.message.text.trim().replace(/@\S+/, '').trim();
       if (
         ctx.message.text.startsWith('/') &&
-        !NANOCLAW_COMMANDS.some(cmd => cmdBase === cmd || cmdBase.startsWith(cmd + ' '))
+        !NANOCLAW_COMMANDS.some(
+          (cmd) => cmdBase === cmd || cmdBase.startsWith(cmd + ' '),
+        )
       ) {
         return;
       }
@@ -361,7 +363,10 @@ export class TelegramChannel implements Channel {
       const name = video?.file_name || `video_${ctx.message.message_id}.mp4`;
 
       if (sizeBytes > MAX_DOWNLOAD_SIZE) {
-        storeNonText(ctx, `[Video: ${name} (${(sizeBytes / 1024 / 1024).toFixed(1)} MB — too large)]`);
+        storeNonText(
+          ctx,
+          `[Video: ${name} (${(sizeBytes / 1024 / 1024).toFixed(1)} MB — too large)]`,
+        );
         return;
       }
 
@@ -391,7 +396,10 @@ export class TelegramChannel implements Channel {
         storeNonText(ctx, `[Video: ${name} → ${containerPath}${caption}]`);
         logger.info({ chatJid, name, localPath }, 'Telegram video downloaded');
       } catch (err) {
-        logger.error({ chatJid, name, err }, 'Failed to download Telegram video');
+        logger.error(
+          { chatJid, name, err },
+          'Failed to download Telegram video',
+        );
         storeNonText(ctx, `[Video: ${name}]`);
       }
     });
@@ -450,7 +458,10 @@ export class TelegramChannel implements Channel {
       const MAX_DOWNLOAD_SIZE = 20 * 1024 * 1024; // 20 MB (Telegram Bot API limit)
 
       if (sizeBytes > MAX_DOWNLOAD_SIZE) {
-        storeNonText(ctx, `[Document: ${name} (${(sizeBytes / 1024 / 1024).toFixed(1)} MB — too large)]`);
+        storeNonText(
+          ctx,
+          `[Document: ${name} (${(sizeBytes / 1024 / 1024).toFixed(1)} MB — too large)]`,
+        );
         return;
       }
 
@@ -477,9 +488,15 @@ export class TelegramChannel implements Channel {
 
         const containerPath = `/workspace/group/attachments/${name}`;
         storeNonText(ctx, `[File: ${name} → ${containerPath}]`);
-        logger.info({ chatJid, name, localPath }, 'Telegram document downloaded');
+        logger.info(
+          { chatJid, name, localPath },
+          'Telegram document downloaded',
+        );
       } catch (err) {
-        logger.error({ chatJid, name, err }, 'Failed to download Telegram document');
+        logger.error(
+          { chatJid, name, err },
+          'Failed to download Telegram document',
+        );
         storeNonText(ctx, `[Document: ${name}]`);
       }
     });
@@ -503,7 +520,10 @@ export class TelegramChannel implements Channel {
       { command: 'new', description: 'Start new conversation' },
       { command: 'restart', description: 'Restart the bot' },
       { command: 'auto_update', description: 'Check for updates and rebuild' },
-      { command: 'dreaming', description: 'Memory consolidation (status/run/light/deep)' },
+      {
+        command: 'dreaming',
+        description: 'Memory consolidation (status/run/light/deep)',
+      },
       { command: 'ping', description: 'Check if bot is online' },
       { command: 'chatid', description: 'Show chat ID for registration' },
     ]);

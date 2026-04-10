@@ -128,13 +128,16 @@ function parseTextResults(output: string): SearchResult[] {
 
     const sourceMatch = block.match(/^qmd:\/\/([^\s:]+)/);
     const scoreMatch = block.match(/Score:\s*(\d+)%/);
-    const contentLines = block.split('\n').filter(l =>
-      !l.startsWith('qmd://') &&
-      !l.startsWith('Title:') &&
-      !l.startsWith('Score:') &&
-      !l.startsWith('@@') &&
-      l.trim()
-    );
+    const contentLines = block
+      .split('\n')
+      .filter(
+        (l) =>
+          !l.startsWith('qmd://') &&
+          !l.startsWith('Title:') &&
+          !l.startsWith('Score:') &&
+          !l.startsWith('@@') &&
+          l.trim(),
+      );
 
     if (sourceMatch) {
       results.push({
@@ -175,7 +178,9 @@ export function getQmdStatus(): {
       const data = JSON.parse(status);
       collections = data.collections?.length || 0;
       indexed = data.totalDocuments || data.indexed || 0;
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
 
     return { available: true, version, collections, indexed };
   } catch {

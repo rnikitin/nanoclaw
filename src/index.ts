@@ -16,7 +16,11 @@ import {
   TRIGGER_PATTERN,
 } from './config.js';
 import { startCanvasServer, setResolveChatJid } from './canvas-server.js';
-import { startDreamingScheduler, stopDreamingScheduler } from './memory/dreaming-scheduler.js';
+import { initCanvasStore } from './canvas-store.js';
+import {
+  startDreamingScheduler,
+  stopDreamingScheduler,
+} from './memory/dreaming-scheduler.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
 import {
@@ -29,6 +33,9 @@ import {
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
+import { extractSkillFromSession } from './skill-extractor.js';
+import { startSkillPromoter, stopSkillPromoter } from './skill-promoter.js';
+import { initSkillTracker } from './skill-tracker.js';
 import {
   cleanupOrphans,
   CONTAINER_RUNTIME_BIN,
@@ -73,10 +80,7 @@ import {
   handleSessionCommand,
   isSessionCommandAllowed,
 } from './session-commands.js';
-import {
-  getRunningScriptTaskIds,
-  stopAllScripts,
-} from './script-runner.js';
+import { getRunningScriptTaskIds, stopAllScripts } from './script-runner.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
@@ -605,6 +609,20 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
 
+  // Fire-and-forget: extract reusable skills from completed sessions
+  if (output !== 'error' && !hadError) {
+    let numTurns: number | undefined;
+    try {
+      const usagePath = path.join(DATA_DIR, 'ipc', group.folder, 'usage.json');
+      const usage = JSON.parse(fs.readFileSync(usagePath, 'utf-8'));
+      numTurns = usage.numTurns;
+    } catch { /* no usage data */ }
+
+    extractSkillFromSession(group.folder, numTurns).catch((err) => {
+      logger.debug({ group: group.name, err }, 'Skill extraction failed (non-fatal)');
+    });
+  }
+
   if (output === 'error' || hadError) {
     // If we already sent output to the user, don't roll back the cursor —
     // the user got their response and re-processing would send duplicates.
@@ -829,11 +847,7 @@ async function startMessageLoop(): Promise<void> {
               pendingCmdMsg.content,
               TRIGGER_PATTERN,
             );
-            const hostOnly = new Set([
-              '/usage',
-              '/thinking',
-              '/restart',
-            ]);
+            const hostOnly = new Set(['/usage', '/thinking', '/restart']);
             if (
               !hostOnly.has(pendingCmd || '') &&
               isSessionCommandAllowed(isMainGroup, !!pendingCmdMsg.is_from_me)
@@ -909,6 +923,13 @@ async function main(): Promise<void> {
     PROXY_BIND_HOST,
   );
 
+  // Initialize canvas persistent store
+  initCanvasStore();
+
+  // Initialize skill tracker (usage metrics + auto-skill registry)
+  initSkillTracker();
+  startSkillPromoter();
+
   // Wire up canvas chatJid resolver
   setResolveChatJid((group: string) => {
     for (const [jid, g] of Object.entries(registeredGroups)) {
@@ -941,6 +962,7 @@ async function main(): Promise<void> {
     proxyServer.close();
     canvasServer?.close();
     stopDreamingScheduler();
+    stopSkillPromoter();
     await stopAllScripts();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();

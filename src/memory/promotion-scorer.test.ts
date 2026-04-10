@@ -30,7 +30,13 @@ describe('PromotionScorer', () => {
         recallCount: 10,
         avgScore: 0.95,
         queryHashes: ['q1', 'q2', 'q3', 'q4', 'q5'],
-        recallDays: ['2026-04-01', '2026-04-02', '2026-04-03', '2026-04-04', '2026-04-05'],
+        recallDays: [
+          '2026-04-01',
+          '2026-04-02',
+          '2026-04-03',
+          '2026-04-04',
+          '2026-04-05',
+        ],
         conceptTags: ['trading', 'strategy', 'momentum', 'llm', 'crypto'],
       });
 
@@ -61,7 +67,13 @@ describe('PromotionScorer', () => {
         recallCount: 10,
         avgScore: 0.99,
         queryHashes: ['q1'], // only 1, need 2
-        recallDays: ['2026-04-01', '2026-04-02', '2026-04-03', '2026-04-04', '2026-04-05'],
+        recallDays: [
+          '2026-04-01',
+          '2026-04-02',
+          '2026-04-03',
+          '2026-04-04',
+          '2026-04-05',
+        ],
         conceptTags: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'],
       });
 
@@ -76,7 +88,9 @@ describe('PromotionScorer', () => {
 
     it('rejects candidate that is too old', () => {
       const entry = makeEntry({
-        firstSeen: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString(), // 60 days ago
+        firstSeen: new Date(
+          Date.now() - 60 * 24 * 60 * 60 * 1000,
+        ).toISOString(), // 60 days ago
       });
 
       const result = scoreCandidate(entry);
@@ -91,13 +105,17 @@ describe('PromotionScorer', () => {
       });
       const stale = makeEntry({
         contentHash: 'def456',
-        lastRecalled: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
+        lastRecalled: new Date(
+          Date.now() - 20 * 24 * 60 * 60 * 1000,
+        ).toISOString(),
       });
 
       const recentScore = scoreCandidate(recent);
       const staleScore = scoreCandidate(stale);
 
-      expect(recentScore.breakdown.recency).toBeGreaterThan(staleScore.breakdown.recency);
+      expect(recentScore.breakdown.recency).toBeGreaterThan(
+        staleScore.breakdown.recency,
+      );
     });
 
     it('returns score between 0 and 1', () => {
@@ -143,9 +161,24 @@ describe('PromotionScorer', () => {
   describe('rankCandidates', () => {
     it('returns candidates sorted by score descending', () => {
       const entries = [
-        makeEntry({ contentHash: 'weak', recallCount: 1, queryHashes: ['q1'], avgScore: 0.3 }),
-        makeEntry({ contentHash: 'strong', recallCount: 15, queryHashes: ['q1','q2','q3','q4','q5','q6','q7','q8'], avgScore: 0.95 }),
-        makeEntry({ contentHash: 'medium', recallCount: 5, queryHashes: ['q1','q2','q3'], avgScore: 0.7 }),
+        makeEntry({
+          contentHash: 'weak',
+          recallCount: 1,
+          queryHashes: ['q1'],
+          avgScore: 0.3,
+        }),
+        makeEntry({
+          contentHash: 'strong',
+          recallCount: 15,
+          queryHashes: ['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7', 'q8'],
+          avgScore: 0.95,
+        }),
+        makeEntry({
+          contentHash: 'medium',
+          recallCount: 5,
+          queryHashes: ['q1', 'q2', 'q3'],
+          avgScore: 0.7,
+        }),
       ];
 
       const ranked = rankCandidates(entries);
@@ -162,17 +195,28 @@ describe('PromotionScorer', () => {
         makeEntry({
           contentHash: 'good',
           recallCount: 15,
-          queryHashes: ['q1','q2','q3','q4','q5','q6','q7','q8'],
+          queryHashes: ['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7', 'q8'],
           avgScore: 0.98,
-          recallDays: ['2026-04-01','2026-04-02','2026-04-03','2026-04-04','2026-04-05'],
-          conceptTags: ['a','b','c','d','e','f','g','h'],
+          recallDays: [
+            '2026-04-01',
+            '2026-04-02',
+            '2026-04-03',
+            '2026-04-04',
+            '2026-04-05',
+          ],
+          conceptTags: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'],
         }),
-        makeEntry({ contentHash: 'bad', recallCount: 1, queryHashes: ['q1'], avgScore: 0.2 }),
+        makeEntry({
+          contentHash: 'bad',
+          recallCount: 1,
+          queryHashes: ['q1'],
+          avgScore: 0.2,
+        }),
       ];
 
       const ranked = rankCandidates(entries);
-      const promoted = ranked.filter(r => r.promoted);
-      const rejected = ranked.filter(r => !r.promoted);
+      const promoted = ranked.filter((r) => r.promoted);
+      const rejected = ranked.filter((r) => !r.promoted);
 
       expect(promoted.length).toBeGreaterThanOrEqual(1);
       expect(rejected.length).toBeGreaterThanOrEqual(1);

@@ -4,7 +4,10 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { buildGraph } from './knowledge-graph.js';
-import { spreadActivation, enhanceWithActivation } from './spreading-activation.js';
+import {
+  spreadActivation,
+  enhanceWithActivation,
+} from './spreading-activation.js';
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -35,7 +38,10 @@ function writeMemoryFile(name: string, content: string): void {
  * Files co-mention pairs to create edges.
  */
 function setupLinearGraph(): void {
-  writeMemoryFile('ab.md', 'Meeting with [[Alice]] and [[Bob]] about the project');
+  writeMemoryFile(
+    'ab.md',
+    'Meeting with [[Alice]] and [[Bob]] about the project',
+  );
   writeMemoryFile('bc.md', '[[Bob]] and [[Charlie]] worked on the API');
   writeMemoryFile('cd.md', '[[Charlie]] handed off to [[Dave]] for review');
   writeMemoryFile('ce.md', '[[Charlie]] and [[Eve]] discussed testing');
@@ -117,7 +123,7 @@ describe('spreadActivation', () => {
     const charlie = results.find((r) => r.entity === 'charlie');
 
     expect(alice!.activation).toBe(1.0);
-    expect(bob!.activation).toBeCloseTo(0.7, 5);     // 0.7^1
+    expect(bob!.activation).toBeCloseTo(0.7, 5); // 0.7^1
     expect(charlie!.activation).toBeCloseTo(0.49, 5); // 0.7^2
   });
 
@@ -158,7 +164,9 @@ describe('spreadActivation', () => {
     const results = spreadActivation(tmpDir, ['Alice'], 3, 0.7, 0.1);
 
     for (let i = 1; i < results.length; i++) {
-      expect(results[i - 1].activation).toBeGreaterThanOrEqual(results[i].activation);
+      expect(results[i - 1].activation).toBeGreaterThanOrEqual(
+        results[i].activation,
+      );
     }
   });
 
@@ -297,14 +305,14 @@ describe('enhanceWithActivation', () => {
 
   it('boostWeight controls the magnitude of the boost', () => {
     setupLinearGraph();
-    const results = [
-      { content: 'Alice and the project', score: 0.5 },
-    ];
+    const results = [{ content: 'Alice and the project', score: 0.5 }];
 
     const lowBoost = enhanceWithActivation(tmpDir, ['Alice'], results, 0.1);
     const highBoost = enhanceWithActivation(tmpDir, ['Alice'], results, 0.5);
 
-    expect(highBoost[0].activationBoost).toBeGreaterThan(lowBoost[0].activationBoost);
+    expect(highBoost[0].activationBoost).toBeGreaterThan(
+      lowBoost[0].activationBoost,
+    );
     // With activation=1.0 for Alice (seed), boost = 1.0 * weight
     expect(lowBoost[0].activationBoost).toBeCloseTo(0.1, 5);
     expect(highBoost[0].activationBoost).toBeCloseTo(0.5, 5);
@@ -312,9 +320,7 @@ describe('enhanceWithActivation', () => {
 
   it('uses default boostWeight of 0.15', () => {
     setupLinearGraph();
-    const results = [
-      { content: 'Alice is mentioned here', score: 0.5 },
-    ];
+    const results = [{ content: 'Alice is mentioned here', score: 0.5 }];
 
     const enhanced = enhanceWithActivation(tmpDir, ['Alice'], results);
     // Alice is a seed (activation=1.0), so boost = 1.0 * 0.15 = 0.15
@@ -325,9 +331,7 @@ describe('enhanceWithActivation', () => {
   it('spreading reaches indirect entities in content', () => {
     setupLinearGraph();
     // Alice -- Bob: Bob should have activation 0.7
-    const results = [
-      { content: 'Bob reviewed the code', score: 0.5 },
-    ];
+    const results = [{ content: 'Bob reviewed the code', score: 0.5 }];
 
     const enhanced = enhanceWithActivation(tmpDir, ['Alice'], results, 0.15);
 
@@ -353,9 +357,7 @@ describe('enhanceWithActivation', () => {
     setupLinearGraph();
     // Content uses lowercase 'alice', entities stored as 'Alice'
     // spreadActivation normalizes to lowercase, so matching should work
-    const results = [
-      { content: 'alice was here', score: 0.5 },
-    ];
+    const results = [{ content: 'alice was here', score: 0.5 }];
 
     const enhanced = enhanceWithActivation(tmpDir, ['Alice'], results, 0.15);
     expect(enhanced[0].activationBoost).toBeCloseTo(0.15, 5);
@@ -363,9 +365,7 @@ describe('enhanceWithActivation', () => {
 
   it('returns all original result fields plus activationBoost', () => {
     setupLinearGraph();
-    const results = [
-      { content: 'Some content', score: 0.42 },
-    ];
+    const results = [{ content: 'Some content', score: 0.42 }];
 
     const enhanced = enhanceWithActivation(tmpDir, ['Alice'], results);
 
@@ -382,9 +382,7 @@ describe('enhanceWithActivation', () => {
 
   it('works when DB does not exist (no boost applied)', () => {
     // No graph built
-    const results = [
-      { content: 'Alice content', score: 0.5 },
-    ];
+    const results = [{ content: 'Alice content', score: 0.5 }];
     const enhanced = enhanceWithActivation(tmpDir, ['Alice'], results);
     // spreadActivation returns [] when no DB, so no boosts
     expect(enhanced[0].activationBoost).toBe(0);

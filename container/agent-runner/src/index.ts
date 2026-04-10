@@ -16,6 +16,8 @@
 
 import fs from 'fs';
 import path from 'path';
+import { execSync } from 'child_process';
+import { createHash } from 'crypto';
 import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
@@ -231,6 +233,36 @@ function createPreCompactHook(assistantName?: string): HookCallback {
       fs.writeFileSync(filePath, markdown);
 
       log(`Archived conversation to ${filePath}`);
+
+      // Append summary to daily note for dreaming system
+      try {
+        const memoryDir = '/workspace/group/memory';
+        fs.mkdirSync(memoryDir, { recursive: true });
+        const dailyNotePath = path.join(memoryDir, `${date}.md`);
+        const topicLine = summary || 'conversation';
+        const turnCount = messages.length;
+        const snippet = messages
+          .filter(m => m.role === 'user')
+          .map(m => m.content.slice(0, 100))
+          .slice(0, 3)
+          .join(' | ');
+        const entry = `- ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}: ${topicLine} (${turnCount} msgs) — ${snippet}\n`;
+
+        // Extract key facts from the conversation
+        const keyFacts = extractKeyFacts(messages);
+        const factsBlock = keyFacts.length > 0
+          ? keyFacts.map(f => `  - ${f}`).join('\n') + '\n'
+          : '';
+
+        if (fs.existsSync(dailyNotePath)) {
+          fs.appendFileSync(dailyNotePath, entry + factsBlock);
+        } else {
+          fs.writeFileSync(dailyNotePath, `# ${date}\n\nSession notes:\n${entry}${factsBlock}`);
+        }
+        log(`Updated daily note: ${dailyNotePath}`);
+      } catch (dailyErr) {
+        log(`Failed to update daily note: ${dailyErr instanceof Error ? dailyErr.message : String(dailyErr)}`);
+      }
     } catch (err) {
       log(`Failed to archive transcript: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -311,6 +343,35 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Extract key facts from a conversation transcript for the daily note.
+ * Looks for decisions, results, and important context in assistant messages.
+ */
+function extractKeyFacts(messages: ParsedMessage[]): string[] {
+  const facts: string[] = [];
+  const decisionPatterns = [
+    /(?:решил[иа]?|decided|created|deployed|fixed|implemented|configured|set up|installed)\s+(.{20,120})/i,
+    /(?:готово|done|completed|finished|успешно)[:.\s]+(.{10,120})/i,
+    /(?:ошибка|error|bug|issue|problem)[:.\s]+(.{10,120})/i,
+  ];
+
+  for (const msg of messages) {
+    if (msg.role !== 'assistant') continue;
+    // Skip very short or very long messages
+    if (msg.content.length < 30 || msg.content.length > 5000) continue;
+
+    for (const pattern of decisionPatterns) {
+      const match = msg.content.match(pattern);
+      if (match) {
+        const fact = match[0].slice(0, 150).trim();
+        if (!facts.includes(fact)) facts.push(fact);
+      }
+    }
+  }
+
+  return facts.slice(0, 5); // Max 5 facts per compaction
 }
 
 /**
@@ -591,6 +652,116 @@ async function runQuery(
   return { newSessionId, lastAssistantUuid, closedDuringQuery };
 }
 
+/**
+ * Active recall: search memory with the user's prompt, track recalls,
+ * and return relevant context for injection into the prompt.
+ * Runs before every agent response to naturally feed the dreaming system.
+ */
+function activeRecall(userPrompt: string): string | null {
+  const groupDir = '/workspace/group';
+  const dreamsDir = path.join(groupDir, '.dreams');
+  const storePath = path.join(dreamsDir, 'short-term-recall.json');
+
+  // Extract a short search query from the user's prompt (first 200 chars)
+  const searchQuery = userPrompt.slice(0, 200).replace(/'/g, "'\\''");
+  if (searchQuery.trim().length < 5) return null;
+
+  let qmdOutput: string;
+  try {
+    qmdOutput = execSync(`qmd search '${searchQuery}' --limit 5`, {
+      encoding: 'utf-8',
+      timeout: 10_000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  } catch {
+    return null; // qmd not available or failed
+  }
+
+  // Parse results
+  const results: Array<{ source: string; content: string; score: number }> = [];
+  for (const block of qmdOutput.split(/\n(?=qmd:\/\/)/)) {
+    if (!block.trim()) continue;
+    const sourceMatch = block.match(/^qmd:\/\/([^\s:]+)/);
+    const scoreMatch = block.match(/Score:\s*(\d+)%/);
+    const contentLines = block.split('\n').filter(l =>
+      !l.startsWith('qmd://') && !l.startsWith('Title:') &&
+      !l.startsWith('Score:') && !l.startsWith('@@') && l.trim()
+    );
+    if (sourceMatch && contentLines.length > 0) {
+      results.push({
+        source: sourceMatch[1],
+        content: contentLines.join('\n').trim(),
+        score: scoreMatch ? parseInt(scoreMatch[1]) / 100 : 0,
+      });
+    }
+  }
+
+  if (results.length === 0) return null;
+
+  // Write to recall store
+  try {
+    if (!fs.existsSync(dreamsDir)) fs.mkdirSync(dreamsDir, { recursive: true });
+
+    let store: { version: number; entries: Record<string, any>; lastUpdated: string };
+    try {
+      store = fs.existsSync(storePath)
+        ? JSON.parse(fs.readFileSync(storePath, 'utf-8'))
+        : { version: 1, entries: {}, lastUpdated: new Date().toISOString() };
+    } catch {
+      store = { version: 1, entries: {}, lastUpdated: new Date().toISOString() };
+    }
+
+    const queryHash = createHash('sha1').update(searchQuery).digest('hex').slice(0, 12);
+    const day = new Date().toISOString().slice(0, 10);
+
+    for (const r of results) {
+      const ch = createHash('sha1').update(r.content).digest('hex').slice(0, 12);
+      if (!store.entries[ch]) {
+        store.entries[ch] = {
+          contentHash: ch,
+          source: r.source,
+          recallCount: 0,
+          queryHashes: [],
+          recallDays: [],
+          conceptTags: [],
+          avgScore: 0,
+          firstSeen: new Date().toISOString(),
+          lastRecalled: new Date().toISOString(),
+          snippet: r.content.slice(0, 280),
+        };
+      }
+      const e = store.entries[ch];
+      e.recallCount++;
+      e.lastRecalled = new Date().toISOString();
+      e.avgScore = ((e.avgScore * (e.recallCount - 1)) + r.score) / e.recallCount;
+      if (!e.queryHashes.includes(queryHash)) {
+        e.queryHashes.push(queryHash);
+        if (e.queryHashes.length > 32) e.queryHashes.shift();
+      }
+      if (!e.recallDays.includes(day)) {
+        e.recallDays.push(day);
+        if (e.recallDays.length > 16) e.recallDays.shift();
+      }
+    }
+
+    store.lastUpdated = new Date().toISOString();
+    fs.writeFileSync(storePath, JSON.stringify(store, null, 2));
+    log(`Active recall: ${results.length} entries tracked for query "${searchQuery.slice(0, 50)}..."`);
+  } catch {
+    // Silently fail — tracking failure doesn't block injection
+  }
+
+  // Format results for prompt injection
+  const contextLines = results
+    .filter(r => r.score >= 0.3)
+    .slice(0, 3)
+    .map(r => `[${r.source}] ${r.content.slice(0, 300)}`);
+
+  if (contextLines.length === 0) return null;
+
+  return `[Memory context — relevant past information recalled automatically]\n${contextLines.join('\n---\n')}\n[End memory context]`;
+}
+
 async function main(): Promise<void> {
   let containerInput: ContainerInput;
 
@@ -637,6 +808,14 @@ async function main(): Promise<void> {
     log(`Draining ${pending.length} pending IPC messages into initial prompt`);
     prompt += '\n' + pending.join('\n');
   }
+
+  // --- Active recall: search memory and inject context ---
+  try {
+    const memoryContext = activeRecall(prompt);
+    if (memoryContext) {
+      prompt = memoryContext + '\n\n' + prompt;
+    }
+  } catch { /* non-fatal */ }
 
   // --- Slash command handling ---
   // Only known session slash commands are handled here. This prevents
@@ -782,6 +961,14 @@ async function main(): Promise<void> {
 
       log(`Got new message (${nextMessage.length} chars), starting new query`);
       prompt = nextMessage;
+
+      // Active recall for follow-up messages
+      try {
+        const memoryContext = activeRecall(prompt);
+        if (memoryContext) {
+          prompt = memoryContext + '\n\n' + prompt;
+        }
+      } catch { /* non-fatal */ }
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);

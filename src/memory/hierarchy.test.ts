@@ -26,7 +26,9 @@ function hierarchyPath(): string {
   return path.join(dreamsDir(), 'hierarchy.json');
 }
 
-function makeEntry(overrides: Partial<RecallEntry> & { contentHash: string }): RecallEntry {
+function makeEntry(
+  overrides: Partial<RecallEntry> & { contentHash: string },
+): RecallEntry {
   return {
     source: 'memory/test.md',
     recallCount: 1,
@@ -71,16 +73,18 @@ describe('loadHierarchy', () => {
   it('loads existing store from disk', () => {
     const saved: HierarchyStore = {
       version: 1,
-      topics: [{
-        id: 'topic-1',
-        level: 'topic',
-        tags: ['alpha', 'beta'],
-        entries: ['hash1'],
-        summary: 'Test topic',
-        importance: 0.8,
-        created_at: '2026-01-01T00:00:00.000Z',
-        updated_at: '2026-01-01T00:00:00.000Z',
-      }],
+      topics: [
+        {
+          id: 'topic-1',
+          level: 'topic',
+          tags: ['alpha', 'beta'],
+          entries: ['hash1'],
+          summary: 'Test topic',
+          importance: 0.8,
+          created_at: '2026-01-01T00:00:00.000Z',
+          updated_at: '2026-01-01T00:00:00.000Z',
+        },
+      ],
       globals: [],
       lastUpdated: '2026-01-01T00:00:00.000Z',
     };
@@ -109,16 +113,18 @@ describe('saveHierarchy', () => {
   it('persists store to disk and updates lastUpdated', () => {
     const store: HierarchyStore = {
       version: 1,
-      topics: [{
-        id: 'topic-x',
-        level: 'topic',
-        tags: ['x'],
-        entries: ['h1'],
-        summary: 'X',
-        importance: 0.5,
-        created_at: '2026-01-01T00:00:00.000Z',
-        updated_at: '2026-01-01T00:00:00.000Z',
-      }],
+      topics: [
+        {
+          id: 'topic-x',
+          level: 'topic',
+          tags: ['x'],
+          entries: ['h1'],
+          summary: 'X',
+          importance: 0.5,
+          created_at: '2026-01-01T00:00:00.000Z',
+          updated_at: '2026-01-01T00:00:00.000Z',
+        },
+      ],
       globals: [],
       lastUpdated: '2020-01-01T00:00:00.000Z',
     };
@@ -134,26 +140,30 @@ describe('saveHierarchy', () => {
   it('round-trips through save and load', () => {
     const store: HierarchyStore = {
       version: 1,
-      topics: [{
-        id: 'rt-1',
-        level: 'topic',
-        tags: ['round', 'trip'],
-        entries: ['h1', 'h2'],
-        summary: 'Round trip test',
-        importance: 0.9,
-        created_at: '2026-01-01T00:00:00.000Z',
-        updated_at: '2026-01-01T00:00:00.000Z',
-      }],
-      globals: [{
-        id: 'g-1',
-        level: 'global',
-        tags: ['global'],
-        entries: ['rt-1'],
-        summary: 'Global pattern',
-        importance: 0.7,
-        created_at: '2026-01-01T00:00:00.000Z',
-        updated_at: '2026-01-01T00:00:00.000Z',
-      }],
+      topics: [
+        {
+          id: 'rt-1',
+          level: 'topic',
+          tags: ['round', 'trip'],
+          entries: ['h1', 'h2'],
+          summary: 'Round trip test',
+          importance: 0.9,
+          created_at: '2026-01-01T00:00:00.000Z',
+          updated_at: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+      globals: [
+        {
+          id: 'g-1',
+          level: 'global',
+          tags: ['global'],
+          entries: ['rt-1'],
+          summary: 'Global pattern',
+          importance: 0.7,
+          created_at: '2026-01-01T00:00:00.000Z',
+          updated_at: '2026-01-01T00:00:00.000Z',
+        },
+      ],
       lastUpdated: '2026-01-01T00:00:00.000Z',
     };
     saveHierarchy(tmpDir, store);
@@ -175,7 +185,10 @@ describe('clusterEntries', () => {
   });
 
   it('returns single cluster for single entry', () => {
-    const entry = makeEntry({ contentHash: 'h1', conceptTags: ['alpha', 'beta'] });
+    const entry = makeEntry({
+      contentHash: 'h1',
+      conceptTags: ['alpha', 'beta'],
+    });
     const result = clusterEntries([entry]);
     // Single entry forms its own cluster (members.length === 1, still returned since > 0)
     expect(result).toHaveLength(1);
@@ -184,8 +197,14 @@ describe('clusterEntries', () => {
   });
 
   it('merges two entries with overlapping tags into one cluster', () => {
-    const e1 = makeEntry({ contentHash: 'h1', conceptTags: ['alpha', 'beta', 'gamma'] });
-    const e2 = makeEntry({ contentHash: 'h2', conceptTags: ['alpha', 'beta', 'delta'] });
+    const e1 = makeEntry({
+      contentHash: 'h1',
+      conceptTags: ['alpha', 'beta', 'gamma'],
+    });
+    const e2 = makeEntry({
+      contentHash: 'h2',
+      conceptTags: ['alpha', 'beta', 'delta'],
+    });
     // Jaccard: intersection=2 (alpha,beta), union=4 (alpha,beta,gamma,delta) → 0.5 >= 0.4
     const result = clusterEntries([e1, e2]);
     expect(result).toHaveLength(1);
@@ -198,7 +217,10 @@ describe('clusterEntries', () => {
 
   it('keeps two entries with no tag overlap as separate clusters', () => {
     const e1 = makeEntry({ contentHash: 'h1', conceptTags: ['alpha', 'beta'] });
-    const e2 = makeEntry({ contentHash: 'h2', conceptTags: ['gamma', 'delta'] });
+    const e2 = makeEntry({
+      contentHash: 'h2',
+      conceptTags: ['gamma', 'delta'],
+    });
     // Jaccard: 0/4 = 0 → below 0.4 threshold
     const result = clusterEntries([e1, e2]);
     expect(result).toHaveLength(2);
@@ -208,13 +230,28 @@ describe('clusterEntries', () => {
 
   it('forms multiple clusters from distinct tag groups', () => {
     // Group A: tags overlap
-    const a1 = makeEntry({ contentHash: 'a1', conceptTags: ['react', 'frontend', 'ui'] });
-    const a2 = makeEntry({ contentHash: 'a2', conceptTags: ['react', 'frontend', 'css'] });
+    const a1 = makeEntry({
+      contentHash: 'a1',
+      conceptTags: ['react', 'frontend', 'ui'],
+    });
+    const a2 = makeEntry({
+      contentHash: 'a2',
+      conceptTags: ['react', 'frontend', 'css'],
+    });
     // Group B: different tags
-    const b1 = makeEntry({ contentHash: 'b1', conceptTags: ['database', 'postgres', 'sql'] });
-    const b2 = makeEntry({ contentHash: 'b2', conceptTags: ['database', 'postgres', 'migration'] });
+    const b1 = makeEntry({
+      contentHash: 'b1',
+      conceptTags: ['database', 'postgres', 'sql'],
+    });
+    const b2 = makeEntry({
+      contentHash: 'b2',
+      conceptTags: ['database', 'postgres', 'migration'],
+    });
     // Group C: yet another cluster
-    const c1 = makeEntry({ contentHash: 'c1', conceptTags: ['deploy', 'docker', 'kubernetes'] });
+    const c1 = makeEntry({
+      contentHash: 'c1',
+      conceptTags: ['deploy', 'docker', 'kubernetes'],
+    });
 
     const result = clusterEntries([a1, a2, b1, b2, c1]);
     // Should have 3 clusters (two merged pairs + one singleton)
@@ -228,7 +265,10 @@ describe('clusterEntries', () => {
   it('uses default threshold of 0.4', () => {
     // Jaccard exactly 0.4: intersection=2, union=5 → 2/5 = 0.4
     const e1 = makeEntry({ contentHash: 'h1', conceptTags: ['a', 'b', 'c'] });
-    const e2 = makeEntry({ contentHash: 'h2', conceptTags: ['a', 'b', 'd', 'e'] });
+    const e2 = makeEntry({
+      contentHash: 'h2',
+      conceptTags: ['a', 'b', 'd', 'e'],
+    });
     // intersection={a,b}=2, union={a,b,c,d,e}=5 → 2/5=0.4 → should merge
     const result = clusterEntries([e1, e2]);
     expect(result).toHaveLength(1);
@@ -237,15 +277,24 @@ describe('clusterEntries', () => {
 
   it('respects custom threshold: high threshold prevents merging', () => {
     const e1 = makeEntry({ contentHash: 'h1', conceptTags: ['a', 'b', 'c'] });
-    const e2 = makeEntry({ contentHash: 'h2', conceptTags: ['a', 'b', 'd', 'e'] });
+    const e2 = makeEntry({
+      contentHash: 'h2',
+      conceptTags: ['a', 'b', 'd', 'e'],
+    });
     // Jaccard: 0.4 — below 0.9 threshold
     const result = clusterEntries([e1, e2], 0.9);
     expect(result).toHaveLength(2);
   });
 
   it('respects custom threshold: low threshold enables merging', () => {
-    const e1 = makeEntry({ contentHash: 'h1', conceptTags: ['a', 'b', 'c', 'd'] });
-    const e2 = makeEntry({ contentHash: 'h2', conceptTags: ['a', 'e', 'f', 'g'] });
+    const e1 = makeEntry({
+      contentHash: 'h1',
+      conceptTags: ['a', 'b', 'c', 'd'],
+    });
+    const e2 = makeEntry({
+      contentHash: 'h2',
+      conceptTags: ['a', 'e', 'f', 'g'],
+    });
     // Jaccard: 1/7 ~ 0.14 → below default 0.4 but above 0.1
     const result = clusterEntries([e1, e2], 0.1);
     expect(result).toHaveLength(1);
@@ -266,8 +315,18 @@ describe('clusterEntries', () => {
 describe('buildTopics', () => {
   it('creates topic clusters from entries and saves to hierarchy.json', () => {
     const entries = [
-      makeEntry({ contentHash: 'h1', conceptTags: ['api', 'rest', 'http'], avgScore: 0.8, snippet: 'REST API design patterns' }),
-      makeEntry({ contentHash: 'h2', conceptTags: ['api', 'rest', 'json'], avgScore: 0.6, snippet: 'JSON response formatting' }),
+      makeEntry({
+        contentHash: 'h1',
+        conceptTags: ['api', 'rest', 'http'],
+        avgScore: 0.8,
+        snippet: 'REST API design patterns',
+      }),
+      makeEntry({
+        contentHash: 'h2',
+        conceptTags: ['api', 'rest', 'json'],
+        avgScore: 0.6,
+        snippet: 'JSON response formatting',
+      }),
     ];
     const topics = buildTopics(tmpDir, entries);
 
@@ -296,8 +355,18 @@ describe('buildTopics', () => {
 
   it('topic summary contains top tags', () => {
     const entries = [
-      makeEntry({ contentHash: 'h1', conceptTags: ['react', 'hooks', 'state'], avgScore: 0.9, snippet: 'Using useState and useEffect hooks' }),
-      makeEntry({ contentHash: 'h2', conceptTags: ['react', 'hooks', 'context'], avgScore: 0.7, snippet: 'React context providers' }),
+      makeEntry({
+        contentHash: 'h1',
+        conceptTags: ['react', 'hooks', 'state'],
+        avgScore: 0.9,
+        snippet: 'Using useState and useEffect hooks',
+      }),
+      makeEntry({
+        contentHash: 'h2',
+        conceptTags: ['react', 'hooks', 'context'],
+        avgScore: 0.7,
+        snippet: 'React context providers',
+      }),
     ];
     const topics = buildTopics(tmpDir, entries);
     expect(topics).toHaveLength(1);
@@ -319,8 +388,16 @@ describe('buildTopics', () => {
   it('deduplicates with existing topics by tag overlap > 0.6', () => {
     // First call: creates topic with tags [a, b, c]
     const entries1 = [
-      makeEntry({ contentHash: 'h1', conceptTags: ['a', 'b', 'c'], avgScore: 0.5 }),
-      makeEntry({ contentHash: 'h2', conceptTags: ['a', 'b', 'c'], avgScore: 0.5 }),
+      makeEntry({
+        contentHash: 'h1',
+        conceptTags: ['a', 'b', 'c'],
+        avgScore: 0.5,
+      }),
+      makeEntry({
+        contentHash: 'h2',
+        conceptTags: ['a', 'b', 'c'],
+        avgScore: 0.5,
+      }),
     ];
     buildTopics(tmpDir, entries1);
     const storeAfterFirst = loadHierarchy(tmpDir);
@@ -328,8 +405,16 @@ describe('buildTopics', () => {
 
     // Second call: same tags → should update existing, not create new
     const entries2 = [
-      makeEntry({ contentHash: 'h3', conceptTags: ['a', 'b', 'c'], avgScore: 0.9 }),
-      makeEntry({ contentHash: 'h4', conceptTags: ['a', 'b', 'c'], avgScore: 0.9 }),
+      makeEntry({
+        contentHash: 'h3',
+        conceptTags: ['a', 'b', 'c'],
+        avgScore: 0.9,
+      }),
+      makeEntry({
+        contentHash: 'h4',
+        conceptTags: ['a', 'b', 'c'],
+        avgScore: 0.9,
+      }),
     ];
     buildTopics(tmpDir, entries2);
     const storeAfterSecond = loadHierarchy(tmpDir);
@@ -346,15 +431,31 @@ describe('buildTopics', () => {
 
   it('creates separate topic when tag overlap is <= 0.6', () => {
     const entries1 = [
-      makeEntry({ contentHash: 'h1', conceptTags: ['a', 'b', 'c', 'd'], avgScore: 0.5 }),
-      makeEntry({ contentHash: 'h2', conceptTags: ['a', 'b', 'c', 'd'], avgScore: 0.5 }),
+      makeEntry({
+        contentHash: 'h1',
+        conceptTags: ['a', 'b', 'c', 'd'],
+        avgScore: 0.5,
+      }),
+      makeEntry({
+        contentHash: 'h2',
+        conceptTags: ['a', 'b', 'c', 'd'],
+        avgScore: 0.5,
+      }),
     ];
     buildTopics(tmpDir, entries1);
 
     // Tags with low overlap to existing
     const entries2 = [
-      makeEntry({ contentHash: 'h3', conceptTags: ['x', 'y', 'z', 'w'], avgScore: 0.5 }),
-      makeEntry({ contentHash: 'h4', conceptTags: ['x', 'y', 'z', 'w'], avgScore: 0.5 }),
+      makeEntry({
+        contentHash: 'h3',
+        conceptTags: ['x', 'y', 'z', 'w'],
+        avgScore: 0.5,
+      }),
+      makeEntry({
+        contentHash: 'h4',
+        conceptTags: ['x', 'y', 'z', 'w'],
+        avgScore: 0.5,
+      }),
     ];
     buildTopics(tmpDir, entries2);
     const store = loadHierarchy(tmpDir);
@@ -380,8 +481,16 @@ describe('buildTopics', () => {
 
     // Add a new high-importance topic
     const entries = [
-      makeEntry({ contentHash: 'new1', conceptTags: ['brand-new-tag', 'important'], avgScore: 0.99 }),
-      makeEntry({ contentHash: 'new2', conceptTags: ['brand-new-tag', 'important'], avgScore: 0.99 }),
+      makeEntry({
+        contentHash: 'new1',
+        conceptTags: ['brand-new-tag', 'important'],
+        avgScore: 0.99,
+      }),
+      makeEntry({
+        contentHash: 'new2',
+        conceptTags: ['brand-new-tag', 'important'],
+        avgScore: 0.99,
+      }),
     ];
     buildTopics(tmpDir, entries);
 
@@ -392,7 +501,9 @@ describe('buildTopics', () => {
     expect(hasNew).toBe(true);
     // Topics are sorted by importance descending
     for (let i = 1; i < updated.topics.length; i++) {
-      expect(updated.topics[i - 1].importance).toBeGreaterThanOrEqual(updated.topics[i].importance);
+      expect(updated.topics[i - 1].importance).toBeGreaterThanOrEqual(
+        updated.topics[i].importance,
+      );
     }
   });
 
@@ -449,28 +560,44 @@ describe('buildGlobals', () => {
     const store = loadHierarchy(tmpDir);
     store.topics = [
       {
-        id: 'topic-a1', level: 'topic',
+        id: 'topic-a1',
+        level: 'topic',
         tags: ['react', 'frontend', 'ui'],
-        entries: ['h1'], summary: 'React UI', importance: 0.8,
-        created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
+        entries: ['h1'],
+        summary: 'React UI',
+        importance: 0.8,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
       },
       {
-        id: 'topic-a2', level: 'topic',
+        id: 'topic-a2',
+        level: 'topic',
         tags: ['react', 'frontend', 'components'],
-        entries: ['h2'], summary: 'React components', importance: 0.7,
-        created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
+        entries: ['h2'],
+        summary: 'React components',
+        importance: 0.7,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
       },
       {
-        id: 'topic-b1', level: 'topic',
+        id: 'topic-b1',
+        level: 'topic',
         tags: ['backend', 'database', 'sql'],
-        entries: ['h3'], summary: 'Database queries', importance: 0.6,
-        created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
+        entries: ['h3'],
+        summary: 'Database queries',
+        importance: 0.6,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
       },
       {
-        id: 'topic-b2', level: 'topic',
+        id: 'topic-b2',
+        level: 'topic',
         tags: ['backend', 'database', 'migration'],
-        entries: ['h4'], summary: 'DB migrations', importance: 0.5,
-        created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
+        entries: ['h4'],
+        summary: 'DB migrations',
+        importance: 0.5,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
       },
     ];
     saveHierarchy(tmpDir, store);
@@ -495,19 +622,34 @@ describe('buildGlobals', () => {
     const store = loadHierarchy(tmpDir);
     store.topics = [
       {
-        id: 't1', level: 'topic', tags: ['shared', 'common', 'alpha'],
-        entries: ['h1'], summary: 'T1', importance: 0.5,
-        created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
+        id: 't1',
+        level: 'topic',
+        tags: ['shared', 'common', 'alpha'],
+        entries: ['h1'],
+        summary: 'T1',
+        importance: 0.5,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
       },
       {
-        id: 't2', level: 'topic', tags: ['shared', 'common', 'beta'],
-        entries: ['h2'], summary: 'T2', importance: 0.5,
-        created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
+        id: 't2',
+        level: 'topic',
+        tags: ['shared', 'common', 'beta'],
+        entries: ['h2'],
+        summary: 'T2',
+        importance: 0.5,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
       },
       {
-        id: 't3', level: 'topic', tags: ['shared', 'common', 'gamma'],
-        entries: ['h3'], summary: 'T3', importance: 0.5,
-        created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
+        id: 't3',
+        level: 'topic',
+        tags: ['shared', 'common', 'gamma'],
+        entries: ['h3'],
+        summary: 'T3',
+        importance: 0.5,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
       },
     ];
     saveHierarchy(tmpDir, store);
@@ -525,10 +667,14 @@ describe('buildGlobals', () => {
     for (let i = 0; i < 60; i++) {
       const group = i % 25; // many groups to potentially form > 20 globals
       store.topics.push({
-        id: `t-${i}`, level: 'topic',
+        id: `t-${i}`,
+        level: 'topic',
         tags: [`group${group}`, `shared${group}`, `extra${i}`],
-        entries: [`h-${i}`], summary: `Topic ${i}`, importance: 0.5,
-        created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
+        entries: [`h-${i}`],
+        summary: `Topic ${i}`,
+        importance: 0.5,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
       });
     }
     saveHierarchy(tmpDir, store);
@@ -548,18 +694,24 @@ describe('retrieveAtLevel', () => {
     const store = loadHierarchy(tmpDir);
     store.topics = [
       {
-        id: 'topic-1', level: 'topic',
+        id: 'topic-1',
+        level: 'topic',
         tags: ['react', 'hooks', 'state'],
-        entries: ['h1'], summary: 'React hooks for state management',
+        entries: ['h1'],
+        summary: 'React hooks for state management',
         importance: 0.8,
-        created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
       },
       {
-        id: 'topic-2', level: 'topic',
+        id: 'topic-2',
+        level: 'topic',
         tags: ['database', 'postgres', 'sql'],
-        entries: ['h2'], summary: 'PostgreSQL queries',
+        entries: ['h2'],
+        summary: 'PostgreSQL queries',
         importance: 0.7,
-        created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
       },
     ];
     saveHierarchy(tmpDir, store);
@@ -572,20 +724,30 @@ describe('retrieveAtLevel', () => {
 
   it('returns matching globals with 0.8 penalty applied', () => {
     const store = loadHierarchy(tmpDir);
-    store.topics = [{
-      id: 'topic-1', level: 'topic',
-      tags: ['api', 'rest'],
-      entries: ['h1'], summary: 'REST APIs',
-      importance: 1.0,
-      created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
-    }];
-    store.globals = [{
-      id: 'global-1', level: 'global',
-      tags: ['api', 'rest'],
-      entries: ['topic-1'], summary: 'Global API pattern',
-      importance: 1.0,
-      created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
-    }];
+    store.topics = [
+      {
+        id: 'topic-1',
+        level: 'topic',
+        tags: ['api', 'rest'],
+        entries: ['h1'],
+        summary: 'REST APIs',
+        importance: 1.0,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      },
+    ];
+    store.globals = [
+      {
+        id: 'global-1',
+        level: 'global',
+        tags: ['api', 'rest'],
+        entries: ['topic-1'],
+        summary: 'Global API pattern',
+        importance: 1.0,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      },
+    ];
     saveHierarchy(tmpDir, store);
 
     const results = retrieveAtLevel(tmpDir, ['api', 'rest']);
@@ -604,18 +766,24 @@ describe('retrieveAtLevel', () => {
     const store = loadHierarchy(tmpDir);
     store.topics = [
       {
-        id: 't-low', level: 'topic',
+        id: 't-low',
+        level: 'topic',
         tags: ['shared', 'common'],
-        entries: ['h1'], summary: 'Low importance',
+        entries: ['h1'],
+        summary: 'Low importance',
         importance: 0.3,
-        created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
       },
       {
-        id: 't-high', level: 'topic',
+        id: 't-high',
+        level: 'topic',
         tags: ['shared', 'common'],
-        entries: ['h2'], summary: 'High importance',
+        entries: ['h2'],
+        summary: 'High importance',
         importance: 0.9,
-        created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
       },
     ];
     saveHierarchy(tmpDir, store);
@@ -628,13 +796,18 @@ describe('retrieveAtLevel', () => {
 
   it('returns empty for no tag matches', () => {
     const store = loadHierarchy(tmpDir);
-    store.topics = [{
-      id: 't-1', level: 'topic',
-      tags: ['alpha', 'beta'],
-      entries: ['h1'], summary: 'Alpha topic',
-      importance: 0.5,
-      created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
-    }];
+    store.topics = [
+      {
+        id: 't-1',
+        level: 'topic',
+        tags: ['alpha', 'beta'],
+        entries: ['h1'],
+        summary: 'Alpha topic',
+        importance: 0.5,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      },
+    ];
     saveHierarchy(tmpDir, store);
 
     const results = retrieveAtLevel(tmpDir, ['completely', 'different']);
@@ -651,11 +824,14 @@ describe('retrieveAtLevel', () => {
     const sharedTags = ['shared', 'common'];
     for (let i = 0; i < 10; i++) {
       store.topics.push({
-        id: `t-${i}`, level: 'topic',
+        id: `t-${i}`,
+        level: 'topic',
         tags: [...sharedTags, `extra-${i}`],
-        entries: [`h-${i}`], summary: `Topic ${i}`,
-        importance: 0.5 + (i * 0.01),
-        created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
+        entries: [`h-${i}`],
+        summary: `Topic ${i}`,
+        importance: 0.5 + i * 0.01,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
       });
     }
     saveHierarchy(tmpDir, store);
@@ -673,11 +849,14 @@ describe('retrieveAtLevel', () => {
     const sharedTags = ['shared', 'common'];
     for (let i = 0; i < 10; i++) {
       store.topics.push({
-        id: `t-${i}`, level: 'topic',
+        id: `t-${i}`,
+        level: 'topic',
         tags: [...sharedTags, `extra-${i}`],
-        entries: [`h-${i}`], summary: `Topic ${i}`,
+        entries: [`h-${i}`],
+        summary: `Topic ${i}`,
         importance: 0.5,
-        created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
       });
     }
     saveHierarchy(tmpDir, store);
@@ -688,13 +867,18 @@ describe('retrieveAtLevel', () => {
 
   it('does not return topics with similarity below 0.2 threshold', () => {
     const store = loadHierarchy(tmpDir);
-    store.topics = [{
-      id: 't-1', level: 'topic',
-      tags: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'],
-      entries: ['h1'], summary: 'Lots of tags',
-      importance: 1.0,
-      created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
-    }];
+    store.topics = [
+      {
+        id: 't-1',
+        level: 'topic',
+        tags: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'],
+        entries: ['h1'],
+        summary: 'Lots of tags',
+        importance: 1.0,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      },
+    ];
     saveHierarchy(tmpDir, store);
 
     // Only 1 matching tag out of 11 total → Jaccard: 1/11 ~ 0.09 < 0.2

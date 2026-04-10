@@ -29,7 +29,7 @@ export interface TopicCluster {
   id: string;
   level: MemoryLevel;
   tags: string[];
-  entries: string[];  // contentHashes of member entries
+  entries: string[]; // contentHashes of member entries
   summary: string;
   importance: number;
   created_at: string;
@@ -55,13 +55,21 @@ export function loadHierarchy(groupDir: string): HierarchyStore {
     if (existsSync(path)) {
       return JSON.parse(readFileSync(path, 'utf-8'));
     }
-  } catch { /* corrupted */ }
-  return { version: 1, topics: [], globals: [], lastUpdated: new Date().toISOString() };
+  } catch {
+    /* corrupted */
+  }
+  return {
+    version: 1,
+    topics: [],
+    globals: [],
+    lastUpdated: new Date().toISOString(),
+  };
 }
 
 export function saveHierarchy(groupDir: string, store: HierarchyStore): void {
   const dreamsDir = join(groupDir, '.dreams');
-  if (!existsSync(dreamsDir)) mkdirSync(dreamsDir, { recursive: true, mode: 0o777 });
+  if (!existsSync(dreamsDir))
+    mkdirSync(dreamsDir, { recursive: true, mode: 0o777 });
   store.lastUpdated = new Date().toISOString();
   const path = getStorePath(groupDir);
   writeFileSync(path, JSON.stringify(store, null, 2));
@@ -92,10 +100,11 @@ export function clusterEntries(
   if (entries.length === 0) return [];
 
   // Each entry starts as its own cluster
-  const clusters: Array<{ tags: string[]; members: RecallEntry[] }> = entries.map((e) => ({
-    tags: [...e.conceptTags],
-    members: [e],
-  }));
+  const clusters: Array<{ tags: string[]; members: RecallEntry[] }> =
+    entries.map((e) => ({
+      tags: [...e.conceptTags],
+      members: [e],
+    }));
 
   // Greedy merge: find most similar pair, merge if above threshold
   let merged = true;
@@ -120,7 +129,10 @@ export function clusterEntries(
       // Merge j into i
       clusters[bestI].members.push(...clusters[bestJ].members);
       // Union tags
-      const tagSet = new Set([...clusters[bestI].tags, ...clusters[bestJ].tags]);
+      const tagSet = new Set([
+        ...clusters[bestI].tags,
+        ...clusters[bestJ].tags,
+      ]);
       clusters[bestI].tags = [...tagSet];
       clusters.splice(bestJ, 1);
       merged = true;
@@ -134,7 +146,10 @@ export function clusterEntries(
  * Generate a topic summary from cluster members.
  * Without LLM, uses tag-based summarization.
  */
-function generateTopicSummary(cluster: { tags: string[]; members: RecallEntry[] }): string {
+function generateTopicSummary(cluster: {
+  tags: string[];
+  members: RecallEntry[];
+}): string {
   const topTags = cluster.tags.slice(0, 5).join(', ');
   const snippets = cluster.members
     .sort((a, b) => b.avgScore - a.avgScore)
@@ -165,7 +180,8 @@ export function buildTopics(
       tags: c.tags,
       entries: c.members.map((m) => m.contentHash),
       summary: generateTopicSummary(c),
-      importance: c.members.reduce((sum, m) => sum + m.avgScore, 0) / c.members.length,
+      importance:
+        c.members.reduce((sum, m) => sum + m.avgScore, 0) / c.members.length,
       created_at: now,
       updated_at: now,
     }));
@@ -180,7 +196,9 @@ export function buildTopics(
     );
     if (existing) {
       // Update existing topic
-      existing.entries = [...new Set([...existing.entries, ...newTopic.entries])];
+      existing.entries = [
+        ...new Set([...existing.entries, ...newTopic.entries]),
+      ];
       existing.summary = newTopic.summary;
       existing.importance = newTopic.importance;
       existing.updated_at = now;
@@ -199,7 +217,11 @@ export function buildTopics(
   saveHierarchy(groupDir, store);
 
   logger.info(
-    { group: basename(groupDir), newTopics: topics.length, totalTopics: store.topics.length },
+    {
+      group: basename(groupDir),
+      newTopics: topics.length,
+      totalTopics: store.topics.length,
+    },
     'Hierarchy topics updated',
   );
 
@@ -239,7 +261,8 @@ export function buildGlobals(groupDir: string): TopicCluster[] {
       tags: c.tags,
       entries: c.members.map((m) => m.contentHash),
       summary: `Global pattern: ${c.tags.slice(0, 5).join(', ')} (${c.members.length} topics)`,
-      importance: c.members.reduce((sum, m) => sum + m.avgScore, 0) / c.members.length,
+      importance:
+        c.members.reduce((sum, m) => sum + m.avgScore, 0) / c.members.length,
       created_at: now,
       updated_at: now,
     }));
@@ -261,7 +284,8 @@ export function retrieveAtLevel(
   maxResults = 5,
 ): Array<{ level: MemoryLevel; content: string; score: number }> {
   const store = loadHierarchy(groupDir);
-  const results: Array<{ level: MemoryLevel; content: string; score: number }> = [];
+  const results: Array<{ level: MemoryLevel; content: string; score: number }> =
+    [];
 
   // Score topics and globals by tag overlap
   for (const topic of store.topics) {
@@ -286,7 +310,5 @@ export function retrieveAtLevel(
     }
   }
 
-  return results
-    .sort((a, b) => b.score - a.score)
-    .slice(0, maxResults);
+  return results.sort((a, b) => b.score - a.score).slice(0, maxResults);
 }

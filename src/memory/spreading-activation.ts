@@ -65,11 +65,13 @@ export function spreadActivation(
       for (const current of frontier) {
         // Get all neighbors
         const neighbors = db
-          .prepare(`
+          .prepare(
+            `
             SELECT to_entity as neighbor FROM relations WHERE LOWER(from_entity) = ?
             UNION
             SELECT from_entity as neighbor FROM relations WHERE LOWER(to_entity) = ?
-          `)
+          `,
+          )
           .all(current, current) as Array<{ neighbor: string }>;
 
         for (const { neighbor } of neighbors) {
@@ -110,10 +112,13 @@ export function enhanceWithActivation(
   results: Array<{ content: string; score: number }>,
   boostWeight = 0.15,
 ): Array<{ content: string; score: number; activationBoost: number }> {
-  if (queryEntities.length === 0) return results.map((r) => ({ ...r, activationBoost: 0 }));
+  if (queryEntities.length === 0)
+    return results.map((r) => ({ ...r, activationBoost: 0 }));
 
   const activations = spreadActivation(groupDir, queryEntities);
-  const activationMap = new Map(activations.map((a) => [a.entity, a.activation]));
+  const activationMap = new Map(
+    activations.map((a) => [a.entity, a.activation]),
+  );
 
   return results.map((result) => {
     // Check if any activated entity appears in this result

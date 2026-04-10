@@ -8,18 +8,19 @@
 import type { RecallEntry } from './recall-tracker.js';
 
 export interface PromotionWeights {
-  frequency: number;    // Signal accumulation count
-  relevance: number;    // Average retrieval quality
-  diversity: number;    // Distinct query/day contexts
-  recency: number;      // Time-decayed freshness
+  frequency: number; // Signal accumulation count
+  relevance: number; // Average retrieval quality
+  diversity: number; // Distinct query/day contexts
+  recency: number; // Time-decayed freshness
   consolidation: number; // Multi-day recurrence strength
-  conceptual: number;   // Concept-tag density
+  conceptual: number; // Concept-tag density
 }
 
 export interface PromotionThresholds {
   minScore: number;
   minRecallCount: number;
   minUniqueQueries: number;
+  minRecallDays: number;
   maxAgeDays: number;
 }
 
@@ -33,17 +34,18 @@ export interface ScoredCandidate {
 
 export const DEFAULT_WEIGHTS: PromotionWeights = {
   frequency: 0.24,
-  relevance: 0.30,
+  relevance: 0.3,
   diversity: 0.15,
   recency: 0.15,
-  consolidation: 0.10,
+  consolidation: 0.1,
   conceptual: 0.06,
 };
 
 export const DEFAULT_THRESHOLDS: PromotionThresholds = {
-  minScore: 0.6,
-  minRecallCount: 2,
-  minUniqueQueries: 2,
+  minScore: 0.8,
+  minRecallCount: 3,
+  minUniqueQueries: 3,
+  minRecallDays: 2,
   maxAgeDays: 30,
 };
 
@@ -76,7 +78,10 @@ export function scoreCandidate(
   }
 
   // 1. Frequency — normalized recall count (log scale, cap at ~20)
-  const frequencyRaw = Math.min(Math.log2(entry.recallCount + 1) / Math.log2(21), 1);
+  const frequencyRaw = Math.min(
+    Math.log2(entry.recallCount + 1) / Math.log2(21),
+    1,
+  );
 
   // 2. Relevance — average retrieval score (already 0-1)
   const relevanceRaw = Math.min(entry.avgScore, 1);
@@ -85,8 +90,11 @@ export function scoreCandidate(
   const diversityRaw = Math.min(entry.queryHashes.length / 10, 1);
 
   // 4. Recency — exponential decay with 14-day half-life
-  const lastRecalledAge = (now - new Date(entry.lastRecalled).getTime()) / (24 * 60 * 60 * 1000);
-  const recencyRaw = Math.exp(-0.693 * lastRecalledAge / RECENCY_HALF_LIFE_DAYS);
+  const lastRecalledAge =
+    (now - new Date(entry.lastRecalled).getTime()) / (24 * 60 * 60 * 1000);
+  const recencyRaw = Math.exp(
+    (-0.693 * lastRecalledAge) / RECENCY_HALF_LIFE_DAYS,
+  );
 
   // 5. Consolidation — multi-day recurrence (unique days / max days)
   const consolidationRaw = Math.min(entry.recallDays.length / 7, 1);
@@ -128,6 +136,9 @@ export function scoreCandidate(
   } else if (entry.queryHashes.length < thresholds.minUniqueQueries) {
     promoted = false;
     reason = `UniqueQueries ${entry.queryHashes.length} < ${thresholds.minUniqueQueries}`;
+  } else if (entry.recallDays.length < thresholds.minRecallDays) {
+    promoted = false;
+    reason = `RecallDays ${entry.recallDays.length} < ${thresholds.minRecallDays}`;
   }
 
   return { entry, score, breakdown, promoted, reason };
@@ -144,6 +155,8 @@ export function rankCandidates(
   phaseBoosts: Record<string, number> = {},
 ): ScoredCandidate[] {
   return entries
-    .map(e => scoreCandidate(e, weights, thresholds, phaseBoosts[e.contentHash] || 0))
+    .map((e) =>
+      scoreCandidate(e, weights, thresholds, phaseBoosts[e.contentHash] || 0),
+    )
     .sort((a, b) => b.score - a.score);
 }

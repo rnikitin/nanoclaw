@@ -84,13 +84,14 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
-                  await deps.sendMessage(data.chatJid, data.text).catch(
-                    (err) =>
+                  await deps
+                    .sendMessage(data.chatJid, data.text)
+                    .catch((err) =>
                       logger.warn(
                         { chatJid: data.chatJid, sourceGroup, err },
                         'IPC message delivery failed (non-fatal)',
                       ),
-                  );
+                    );
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },
                     'IPC message sent',
@@ -136,13 +137,19 @@ export function startIpcWatcher(deps: IpcDeps): void {
                       'IPC file not found',
                     );
                   } else {
-                    await deps.sendFile(data.chatJid, hostPath, data.caption).catch(
-                      (err) =>
+                    await deps
+                      .sendFile(data.chatJid, hostPath, data.caption)
+                      .catch((err) =>
                         logger.warn(
-                          { chatJid: data.chatJid, sourceGroup, file: data.filePath, err },
+                          {
+                            chatJid: data.chatJid,
+                            sourceGroup,
+                            file: data.filePath,
+                            err,
+                          },
                           'IPC file delivery failed (non-fatal)',
                         ),
-                    );
+                      );
                     logger.info(
                       {
                         chatJid: data.chatJid,
@@ -239,15 +246,21 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   // Send canvas URL to chat
                   const host = process.env.CANVAS_HOST || 'ark.nikitin.me';
                   const url = `https://${host}${result.url}`;
-                  await deps.sendMessage(
-                    chatJid,
-                    `${data.title || 'Canvas'}: ${url}`,
-                  ).catch((err) =>
-                    logger.warn({ sourceGroup, err }, 'Failed to send canvas URL'),
-                  );
+                  await deps
+                    .sendMessage(chatJid, `${data.title || 'Canvas'}: ${url}`)
+                    .catch((err) =>
+                      logger.warn(
+                        { sourceGroup, err },
+                        'Failed to send canvas URL',
+                      ),
+                    );
                 }
                 logger.info(
-                  { canvas_id: data.canvas_id, action: data.action, sourceGroup },
+                  {
+                    canvas_id: data.canvas_id,
+                    action: data.action,
+                    sourceGroup,
+                  },
                   'Canvas IPC processed',
                 );
               }
@@ -267,7 +280,10 @@ export function startIpcWatcher(deps: IpcDeps): void {
           }
         }
       } catch (err) {
-        logger.error({ err, sourceGroup }, 'Error reading IPC canvas directory');
+        logger.error(
+          { err, sourceGroup },
+          'Error reading IPC canvas directory',
+        );
       }
     }
 
@@ -411,7 +427,10 @@ export async function processTaskIpc(
           // Stop running script container if this is a script task
           if (task.execution_mode === 'script') {
             stopScript(data.taskId).catch((err) =>
-              logger.warn({ taskId: data.taskId, err }, 'Failed to stop script on pause'),
+              logger.warn(
+                { taskId: data.taskId, err },
+                'Failed to stop script on pause',
+              ),
             );
           }
           logger.info(
@@ -454,7 +473,10 @@ export async function processTaskIpc(
           // Stop running script container if this is a script task
           if (task.execution_mode === 'script') {
             stopScript(data.taskId).catch((err) =>
-              logger.warn({ taskId: data.taskId, err }, 'Failed to stop script on cancel'),
+              logger.warn(
+                { taskId: data.taskId, err },
+                'Failed to stop script on cancel',
+              ),
             );
           }
           deleteTask(data.taskId);

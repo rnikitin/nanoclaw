@@ -80,9 +80,9 @@ describe('extractSessionCommand', () => {
     expect(extractSessionCommand('/restart@some_bot', trigger)).toBe(
       '/restart',
     );
-    expect(
-      extractSessionCommand('@Andy /thinking@mybot', trigger),
-    ).toBe('/thinking');
+    expect(extractSessionCommand('@Andy /thinking@mybot', trigger)).toBe(
+      '/thinking',
+    );
   });
 });
 

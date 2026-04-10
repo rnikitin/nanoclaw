@@ -47,7 +47,10 @@ describe('knowledge-graph', () => {
     });
 
     it('returns zero counts when no .md files exist', () => {
-      writeFileSync(join(groupDir, 'memory', 'notes.txt'), '[[Alice]] and [[Bob]]');
+      writeFileSync(
+        join(groupDir, 'memory', 'notes.txt'),
+        '[[Alice]] and [[Bob]]',
+      );
 
       const stats = buildGraph(groupDir);
 
@@ -56,7 +59,11 @@ describe('knowledge-graph', () => {
     });
 
     it('extracts typed wikilinks like [[people/Alice]]', () => {
-      writeMd(groupDir, 'memory/team.md', 'Our team includes [[people/Alice]] and [[people/Bob]].');
+      writeMd(
+        groupDir,
+        'memory/team.md',
+        'Our team includes [[people/Alice]] and [[people/Bob]].',
+      );
 
       buildGraph(groupDir);
 
@@ -71,7 +78,11 @@ describe('knowledge-graph', () => {
     });
 
     it('extracts project wikilinks like [[projects/Foo]]', () => {
-      writeMd(groupDir, 'memory/work.md', 'Working on [[projects/Foo]] this quarter.');
+      writeMd(
+        groupDir,
+        'memory/work.md',
+        'Working on [[projects/Foo]] this quarter.',
+      );
 
       buildGraph(groupDir);
 
@@ -81,7 +92,11 @@ describe('knowledge-graph', () => {
     });
 
     it('extracts bare concept wikilinks like [[SomeConcept]]', () => {
-      writeMd(groupDir, 'memory/notes.md', 'This relates to [[MachineLearning]] and [[NeuralNetworks]].');
+      writeMd(
+        groupDir,
+        'memory/notes.md',
+        'This relates to [[MachineLearning]] and [[NeuralNetworks]].',
+      );
 
       buildGraph(groupDir);
 
@@ -91,7 +106,11 @@ describe('knowledge-graph', () => {
     });
 
     it('extracts task IDs like *S18* and *M31*', () => {
-      writeMd(groupDir, 'memory/tasks.md', 'Completed *S18* and started *M31* this sprint.');
+      writeMd(
+        groupDir,
+        'memory/tasks.md',
+        'Completed *S18* and started *M31* this sprint.',
+      );
 
       buildGraph(groupDir);
 
@@ -105,7 +124,11 @@ describe('knowledge-graph', () => {
     });
 
     it('extracts *D* and *P* task prefixes', () => {
-      writeMd(groupDir, 'memory/tasks.md', 'Decision *D5* blocks *P12* progress.');
+      writeMd(
+        groupDir,
+        'memory/tasks.md',
+        'Decision *D5* blocks *P12* progress.',
+      );
 
       buildGraph(groupDir);
 
@@ -119,7 +142,9 @@ describe('knowledge-graph', () => {
     });
 
     it('creates co-occurrence relations between entities in the same file', () => {
-      writeMd(groupDir, 'memory/meeting.md',
+      writeMd(
+        groupDir,
+        'memory/meeting.md',
         '[[people/Alice]] discussed [[projects/Alpha]] with [[people/Bob]].',
       );
 
@@ -136,7 +161,9 @@ describe('knowledge-graph', () => {
     });
 
     it('co-occurrence relations have correct type and evidence', () => {
-      writeMd(groupDir, 'memory/context.md',
+      writeMd(
+        groupDir,
+        'memory/context.md',
         '[[people/Alice]] works on [[projects/Beta]].',
       );
 
@@ -145,7 +172,9 @@ describe('knowledge-graph', () => {
       const alice = queryEntity(groupDir, 'Alice');
       expect(alice).not.toBeNull();
 
-      const betaRel = alice!.relations.find((r) => r.related_entity.name === 'Beta');
+      const betaRel = alice!.relations.find(
+        (r) => r.related_entity.name === 'Beta',
+      );
       expect(betaRel).toBeDefined();
       expect(betaRel!.relation_type).toBe('co_occurrence');
       expect(betaRel!.evidence).toContain('Co-mentioned in');
@@ -168,7 +197,11 @@ describe('knowledge-graph', () => {
     });
 
     it('scans memory/ directory', () => {
-      writeMd(groupDir, 'memory/insight.md', '[[people/Charlie]] discovered [[Gravity]].');
+      writeMd(
+        groupDir,
+        'memory/insight.md',
+        '[[people/Charlie]] discovered [[Gravity]].',
+      );
 
       buildGraph(groupDir);
 
@@ -178,7 +211,11 @@ describe('knowledge-graph', () => {
 
     it('scans conversations/ directory', () => {
       mkdirSync(join(groupDir, 'conversations'), { recursive: true });
-      writeMd(groupDir, 'conversations/chat.md', '[[people/Dave]] mentioned [[Kubernetes]].');
+      writeMd(
+        groupDir,
+        'conversations/chat.md',
+        '[[people/Dave]] mentioned [[Kubernetes]].',
+      );
 
       buildGraph(groupDir);
 
@@ -200,7 +237,11 @@ describe('knowledge-graph', () => {
 
     it('scans research/ directory', () => {
       mkdirSync(join(groupDir, 'research'), { recursive: true });
-      writeMd(groupDir, 'research/paper.md', '[[QuantumComputing]] is advancing rapidly.');
+      writeMd(
+        groupDir,
+        'research/paper.md',
+        '[[QuantumComputing]] is advancing rapidly.',
+      );
 
       buildGraph(groupDir);
 
@@ -209,7 +250,9 @@ describe('knowledge-graph', () => {
     });
 
     it('handles nested directories like memory/projects/foo.md', () => {
-      writeMd(groupDir, 'memory/projects/alpha.md',
+      writeMd(
+        groupDir,
+        'memory/projects/alpha.md',
         '[[people/Frank]] leads [[projects/Alpha]].',
       );
 
@@ -232,7 +275,11 @@ describe('knowledge-graph', () => {
     });
 
     it('is idempotent — rebuilding increases mention_count', () => {
-      writeMd(groupDir, 'memory/test.md', '[[people/Grace]] works on [[projects/Gamma]].');
+      writeMd(
+        groupDir,
+        'memory/test.md',
+        '[[people/Grace]] works on [[projects/Gamma]].',
+      );
 
       buildGraph(groupDir);
       const firstBuild = queryEntity(groupDir, 'Grace');
@@ -246,7 +293,9 @@ describe('knowledge-graph', () => {
     });
 
     it('handles mixed wikilinks and task IDs in the same file', () => {
-      writeMd(groupDir, 'memory/mixed.md',
+      writeMd(
+        groupDir,
+        'memory/mixed.md',
         '[[people/Hank]] completed *M7* for [[projects/Delta]] while researching [[AI]].',
       );
 
@@ -261,7 +310,11 @@ describe('knowledge-graph', () => {
     });
 
     it('handles decision wikilinks [[decisions/Foo]]', () => {
-      writeMd(groupDir, 'memory/decisions.md', 'We made [[decisions/UseRust]] last quarter.');
+      writeMd(
+        groupDir,
+        'memory/decisions.md',
+        'We made [[decisions/UseRust]] last quarter.',
+      );
 
       buildGraph(groupDir);
 
@@ -271,7 +324,11 @@ describe('knowledge-graph', () => {
     });
 
     it('handles task/ prefixed wikilinks [[task/Setup]]', () => {
-      writeMd(groupDir, 'memory/plan.md', 'Next step is [[task/Setup]] the infra.');
+      writeMd(
+        groupDir,
+        'memory/plan.md',
+        'Next step is [[task/Setup]] the infra.',
+      );
 
       buildGraph(groupDir);
 
@@ -285,7 +342,11 @@ describe('knowledge-graph', () => {
 
   describe('queryEntity', () => {
     it('returns entity and relations for existing entity', () => {
-      writeMd(groupDir, 'memory/test.md', '[[people/Alice]] and [[projects/Omega]].');
+      writeMd(
+        groupDir,
+        'memory/test.md',
+        '[[people/Alice]] and [[projects/Omega]].',
+      );
       buildGraph(groupDir);
 
       const result = queryEntity(groupDir, 'Alice');
@@ -322,7 +383,11 @@ describe('knowledge-graph', () => {
     });
 
     it('returns relations with correct direction labels', () => {
-      writeMd(groupDir, 'memory/test.md', '[[people/Alice]] and [[people/Bob]] and [[projects/Zeta]].');
+      writeMd(
+        groupDir,
+        'memory/test.md',
+        '[[people/Alice]] and [[people/Bob]] and [[projects/Zeta]].',
+      );
       buildGraph(groupDir);
 
       const alice = queryEntity(groupDir, 'Alice');
@@ -347,7 +412,9 @@ describe('knowledge-graph', () => {
 
   describe('listEntities', () => {
     it('returns all entities when no type filter', () => {
-      writeMd(groupDir, 'memory/test.md',
+      writeMd(
+        groupDir,
+        'memory/test.md',
         '[[people/Alice]] works on [[projects/Beta]] using [[Docker]].',
       );
       buildGraph(groupDir);
@@ -362,7 +429,9 @@ describe('knowledge-graph', () => {
     });
 
     it('filters by type when specified', () => {
-      writeMd(groupDir, 'memory/test.md',
+      writeMd(
+        groupDir,
+        'memory/test.md',
         '[[people/Alice]] and [[people/Bob]] work on [[projects/Gamma]].',
       );
       buildGraph(groupDir);
@@ -394,7 +463,11 @@ describe('knowledge-graph', () => {
       // Alice appears in 3 files, Bob in 1
       writeMd(groupDir, 'memory/a.md', '[[people/Alice]] note 1.');
       writeMd(groupDir, 'memory/b.md', '[[people/Alice]] note 2.');
-      writeMd(groupDir, 'memory/c.md', '[[people/Alice]] and [[people/Bob]] note 3.');
+      writeMd(
+        groupDir,
+        'memory/c.md',
+        '[[people/Alice]] and [[people/Bob]] note 3.',
+      );
       buildGraph(groupDir);
 
       const people = listEntities(groupDir, 'person');
@@ -420,7 +493,11 @@ describe('knowledge-graph', () => {
 
   describe('findPath', () => {
     it('finds direct connection between two entities', () => {
-      writeMd(groupDir, 'memory/test.md', '[[people/Alice]] and [[people/Bob]].');
+      writeMd(
+        groupDir,
+        'memory/test.md',
+        '[[people/Alice]] and [[people/Bob]].',
+      );
       buildGraph(groupDir);
 
       const paths = findPath(groupDir, 'Alice', 'Bob');
@@ -435,8 +512,16 @@ describe('knowledge-graph', () => {
 
     it('finds multi-hop path', () => {
       // Alice -> Concept (file1), Concept -> Bob (file2)
-      writeMd(groupDir, 'memory/file1.md', '[[people/Alice]] studies [[GraphTheory]].');
-      writeMd(groupDir, 'memory/file2.md', '[[people/Bob]] teaches [[GraphTheory]].');
+      writeMd(
+        groupDir,
+        'memory/file1.md',
+        '[[people/Alice]] studies [[GraphTheory]].',
+      );
+      writeMd(
+        groupDir,
+        'memory/file2.md',
+        '[[people/Bob]] teaches [[GraphTheory]].',
+      );
       buildGraph(groupDir);
 
       const paths = findPath(groupDir, 'Alice', 'Bob');
@@ -448,7 +533,11 @@ describe('knowledge-graph', () => {
     });
 
     it('returns empty array when no path exists', () => {
-      writeMd(groupDir, 'memory/file1.md', '[[people/Alice]] and [[ConceptA]].');
+      writeMd(
+        groupDir,
+        'memory/file1.md',
+        '[[people/Alice]] and [[ConceptA]].',
+      );
       writeMd(groupDir, 'memory/file2.md', '[[people/Bob]] and [[ConceptB]].');
       buildGraph(groupDir);
 
@@ -523,7 +612,9 @@ describe('knowledge-graph', () => {
     });
 
     it('returns correct counts for populated graph', () => {
-      writeMd(groupDir, 'memory/test.md',
+      writeMd(
+        groupDir,
+        'memory/test.md',
         '[[people/Alice]] and [[people/Bob]] work on [[projects/Omega]].',
       );
       buildGraph(groupDir);
@@ -538,8 +629,16 @@ describe('knowledge-graph', () => {
     });
 
     it('returns correct byType breakdown', () => {
-      writeMd(groupDir, 'memory/a.md', '[[people/Alice]] studies [[Topology]].');
-      writeMd(groupDir, 'memory/b.md', '*S1* and *M2* are tasks. [[decisions/GoRust]].');
+      writeMd(
+        groupDir,
+        'memory/a.md',
+        '[[people/Alice]] studies [[Topology]].',
+      );
+      writeMd(
+        groupDir,
+        'memory/b.md',
+        '*S1* and *M2* are tasks. [[decisions/GoRust]].',
+      );
       buildGraph(groupDir);
 
       const stats = getGraphStats(groupDir);

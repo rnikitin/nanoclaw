@@ -20,10 +20,7 @@ import {
   ContainerOutput,
 } from './container-runner.js';
 import { CONTAINER_RUNTIME_BIN, stopContainer } from './container-runtime.js';
-import {
-  resolveGroupFolderPath,
-  resolveGroupIpcPath,
-} from './group-folder.js';
+import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
@@ -270,9 +267,7 @@ export async function runScriptTask(
         result: lastResult,
         newSessionId,
         error:
-          status === 'error'
-            ? `Script exited with code ${code}`
-            : undefined,
+          status === 'error' ? `Script exited with code ${code}` : undefined,
       });
     });
 

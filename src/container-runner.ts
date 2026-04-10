@@ -162,6 +162,31 @@ export function buildVolumeMounts(
       fs.cpSync(srcDir, dstDir, { recursive: true });
     }
   }
+
+  // Sync auto-generated skills (local drafts + proven)
+  const autoSkillsSrc = path.join(GROUPS_DIR, group.folder, 'skills', 'auto');
+  if (fs.existsSync(autoSkillsSrc)) {
+    for (const skillDir of fs.readdirSync(autoSkillsSrc)) {
+      const srcDir = path.join(autoSkillsSrc, skillDir);
+      if (!fs.statSync(srcDir).isDirectory()) continue;
+      const dstDir = path.join(skillsDst, skillDir);
+      fs.cpSync(srcDir, dstDir, { recursive: true });
+    }
+  }
+
+  // Sync global auto-skills (promoted skills available to all rooms)
+  const globalAutoSkillsSrc = path.join(GROUPS_DIR, 'global', 'skills', 'auto');
+  if (fs.existsSync(globalAutoSkillsSrc)) {
+    for (const skillDir of fs.readdirSync(globalAutoSkillsSrc)) {
+      const srcDir = path.join(globalAutoSkillsSrc, skillDir);
+      if (!fs.statSync(srcDir).isDirectory()) continue;
+      const dstDir = path.join(skillsDst, skillDir);
+      // Don't overwrite local version with global
+      if (!fs.existsSync(dstDir)) {
+        fs.cpSync(srcDir, dstDir, { recursive: true });
+      }
+    }
+  }
   mounts.push({
     hostPath: groupSessionsDir,
     containerPath: '/home/node/.claude',
@@ -205,7 +230,12 @@ export function buildVolumeMounts(
   });
 
   // Persistent package caches (pip, npm) so libraries survive container restarts
-  const pkgCacheDir = path.join(DATA_DIR, 'sessions', group.folder, 'pkg-cache');
+  const pkgCacheDir = path.join(
+    DATA_DIR,
+    'sessions',
+    group.folder,
+    'pkg-cache',
+  );
   const pipCacheDir = path.join(pkgCacheDir, 'pip');
   const npmCacheDir = path.join(pkgCacheDir, 'npm');
   fs.mkdirSync(pipCacheDir, { recursive: true });
@@ -258,7 +288,14 @@ export function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
 ): string[] {
-  const args: string[] = ['run', '-i', '--rm', '--memory=8g', '--name', containerName];
+  const args: string[] = [
+    'run',
+    '-i',
+    '--rm',
+    '--memory=8g',
+    '--name',
+    containerName,
+  ];
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
@@ -291,7 +328,10 @@ export function buildContainerArgs(
 
   // Pass Redis/Postgres connection info for containers that need them
   args.push('-e', `REDIS_URL=redis://${CONTAINER_HOST_GATEWAY}:6379`);
-  args.push('-e', `DATABASE_URL=postgresql://tronn3:tronn3@${CONTAINER_HOST_GATEWAY}:5432/tronn3`);
+  args.push(
+    '-e',
+    `DATABASE_URL=postgresql://tronn3:tronn3@${CONTAINER_HOST_GATEWAY}:5432/tronn3`,
+  );
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());

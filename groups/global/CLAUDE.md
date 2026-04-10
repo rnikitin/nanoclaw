@@ -23,6 +23,10 @@ Personality:
 
 Your output is sent to the user or group.
 
+### Voice messages
+
+Voice messages are automatically transcribed before they reach you. They appear in the conversation as `[Voice: transcribed text]`. You already have the full text — just read it and respond normally. You do NOT need to process audio files yourself.
+
 You also have `mcp__nanoclaw__send_message` which sends a message immediately while you're still working. This is useful when you want to acknowledge a request before starting longer work.
 
 ### Internal thoughts
@@ -49,7 +53,14 @@ Files you create are saved in `/workspace/group/`. Use this for notes, research,
 
 ### Memory Search
 
-You have a `memory_search` tool (MCP) that searches across your group's memory files and past conversations using semantic search. **Always use it before answering questions about past work, decisions, people, preferences, or history.**
+You have a `memory_search` tool (MCP) that searches across your group's memory files and past conversations using semantic search.
+
+**When to use memory_search (ALWAYS use it in these cases):**
+- Before answering questions about past work, decisions, people, or history
+- When the user references something from a previous conversation ("как мы решили", "помнишь", "that thing we discussed")
+- When you need context about a project, person, or decision you're not sure about
+- When looking up specific facts, dates, or details from past sessions
+- Prefer `memory_search` over reading files directly — it finds the most relevant content and helps the system learn what's important
 
 ```
 memory_search(query: "what we decided about TRONN5 strategy")
@@ -63,7 +74,20 @@ Parameters:
 - `scope` — "memory" (memory files only), "conversations" (past chats), "all" (both, default)
 - `limit` — max results (default: 6)
 
-Every search is automatically tracked for the dreaming system — frequently recalled memories get promoted to long-term storage.
+Every search automatically strengthens the memory system — frequently recalled memories get promoted to long-term storage. The more you use memory_search, the smarter the system becomes at knowing what to remember.
+
+Search results are automatically augmented with related entities from the knowledge graph (spreading activation). You don't need to do anything extra — connected concepts appear at the bottom of search results.
+
+### Knowledge Graph
+
+You have a `memory_graph` tool (MCP) for exploring entity relationships:
+
+```
+memory_graph(action: "lookup", entity: "TRONN5")          // entity details + relations
+memory_graph(action: "path", from: "TRONN5", to: "Jesse") // find connection paths
+```
+
+Use when you need to understand how concepts, people, and projects are connected — especially for multi-hop reasoning ("who decided X that affects Y").
 
 ### Memory Files
 
@@ -109,14 +133,26 @@ Use Jesse for backtesting, live trading, and strategy development. Strategies go
 
 ## Web Hosting
 
-Each agent has a web directory for serving dashboards, reports, and interactive pages:
+You have DIRECT access to publish static files. No nginx config needed — it's already set up.
 
-- Write files to `/workspace/group/www/` — they are served via nginx
-- Public base URL: `https://ark.nikitin.me/$NANOCLAW_GROUP_FOLDER/`
-- To get your full URL in bash: `echo "https://ark.nikitin.me/$NANOCLAW_GROUP_FOLDER/filename.html"`
-- Example: put `index.html` in `/workspace/group/www/` → accessible at `https://ark.nikitin.me/$NANOCLAW_GROUP_FOLDER/index.html`
-- You can create a `.nginx.conf` file in `/workspace/group/www/` to customize your location block (rewrites, proxy_pass, headers, try_files, etc.)
-- For dynamic backends (FastAPI, Express, etc.): bind to a port and proxy_pass to it from `.nginx.conf`
+*How to publish a static page:*
+```bash
+mkdir -p /workspace/group/www
+cat > /workspace/group/www/my-page.html << 'EOF'
+<html><body><h1>Hello</h1></body></html>
+EOF
+echo "Published: https://ark.nikitin.me/$NANOCLAW_GROUP_FOLDER/my-page.html"
+```
+
+That's it. The file is immediately accessible at the URL. No restart, no config.
+
+*Key facts:*
+- Write files to `/workspace/group/www/` — nginx serves them automatically
+- Public URL: `https://ark.nikitin.me/$NANOCLAW_GROUP_FOLDER/<filename>`
+- Works for HTML, CSS, JS, images, PDFs — any static file
+- Subdirectories work: `/workspace/group/www/reports/jan.html` → `.../reports/jan.html`
+- You have FULL write access to `/workspace/group/www/` — you ARE inside the container, this IS your directory
+- Advanced: create `.nginx.conf` in `/workspace/group/www/` to customize your nginx location block (rewrites, proxy_pass, headers, try_files). Use only if you know what you're doing — incorrect config can break hosting for your group
 
 ## Background Scripts
 

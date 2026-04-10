@@ -213,7 +213,10 @@ function checkAuth(req: IncomingMessage): boolean {
   if (authHeader === `Bearer ${token}`) return true;
 
   // Check ?token= query param
-  const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+  const url = new URL(
+    req.url || '/',
+    `http://${req.headers.host || 'localhost'}`,
+  );
   if (url.searchParams.get('token') === token) return true;
 
   return false;
@@ -227,7 +230,10 @@ const CANVAS_UI_DIR = path.join(
   'dist',
 );
 
-function generateShellHtml(session: CanvasSession | null, canvasId: string): string {
+function generateShellHtml(
+  session: CanvasSession | null,
+  canvasId: string,
+): string {
   const title = session?.title || 'Canvas';
   const wsProtocol = 'ws'; // nginx will upgrade
   return `<!DOCTYPE html>
@@ -238,7 +244,7 @@ function generateShellHtml(session: CanvasSession | null, canvasId: string): str
   <title>${title}</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: #09090b; color: #a1a1aa; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
     #root { padding: 20px; }
     #status { position: fixed; top: 10px; right: 10px; font-size: 12px; opacity: 0.5; }
     .connecting { color: #f39c12; }
@@ -249,7 +255,7 @@ function generateShellHtml(session: CanvasSession | null, canvasId: string): str
 <body>
   <div id="status" class="connecting">connecting...</div>
   <div id="root"></div>
-  <script src="/canvas/runtime.js"></script>
+  <script src="/canvas/runtime.js?v=${Date.now()}"></script>
   <script>
     CanvasRuntime.init({
       canvasId: ${JSON.stringify(canvasId)},
@@ -291,14 +297,16 @@ export function startCanvasServer(port = CANVAS_PORT): Promise<Server> {
 
       // Serve runtime.js bundle
       if (req.method === 'GET' && pathname === '/api/canvas/runtime.js') {
-        sendFile(res, path.join(CANVAS_UI_DIR, 'canvas-runtime.js'), 'application/javascript');
+        sendFile(
+          res,
+          path.join(CANVAS_UI_DIR, 'canvas-runtime.js'),
+          'application/javascript',
+        );
         return;
       }
 
       // Canvas page: GET /api/canvas/:group/:canvas_id
-      const pageMatch = pathname.match(
-        /^\/api\/canvas\/([^/]+)\/([^/]+)\/?$/,
-      );
+      const pageMatch = pathname.match(/^\/api\/canvas\/([^/]+)\/([^/]+)\/?$/);
       if (req.method === 'GET' && pageMatch) {
         if (!checkAuth(req)) {
           sendJson(res, 401, { ok: false, error: 'Unauthorized' });
@@ -419,98 +427,99 @@ export function startCanvasServer(port = CANVAS_PORT): Promise<Server> {
       });
     });
 
-    wss.on(
-      'connection',
-      (ws: WebSocket, _req: IncomingMessage, url: URL) => {
-        const canvasId = url.searchParams.get('canvas_id') || '';
+    wss.on('connection', (ws: WebSocket, _req: IncomingMessage, url: URL) => {
+      const canvasId = url.searchParams.get('canvas_id') || '';
 
-        if (canvasId) {
-          addSubscriber(canvasId, ws);
+      if (canvasId) {
+        addSubscriber(canvasId, ws);
 
-          // Send current state if canvas exists
-          const session = getCanvas(canvasId);
-          if (session) {
-            ws.send(
-              JSON.stringify({
-                type: 'create',
-                canvas_id: canvasId,
-                jsx: session.jsx,
-                state: session.state,
-                title: session.title,
-              }),
-            );
-          }
+        // Send current state if canvas exists
+        const session = getCanvas(canvasId);
+        if (session) {
+          ws.send(
+            JSON.stringify({
+              type: 'create',
+              canvas_id: canvasId,
+              jsx: session.jsx,
+              state: session.state,
+              title: session.title,
+            }),
+          );
         }
+      }
 
-        ws.on('message', (raw) => {
-          try {
-            const msg = JSON.parse(raw.toString());
+      ws.on('message', (raw) => {
+        try {
+          const msg = JSON.parse(raw.toString());
 
-            if (msg.type === 'ping') {
-              ws.send(JSON.stringify({ type: 'pong' }));
-              return;
-            }
-
-            if (msg.type === 'subscribe' && msg.canvas_id) {
-              // Late subscription
-              removeSubscriber(ws);
-              addSubscriber(msg.canvas_id, ws);
-              const session = getCanvas(msg.canvas_id);
-              if (session) {
-                ws.send(
-                  JSON.stringify({
-                    type: 'create',
-                    canvas_id: msg.canvas_id,
-                    jsx: session.jsx,
-                    state: session.state,
-                    title: session.title,
-                  }),
-                );
-              }
-              return;
-            }
-
-            if (msg.type === 'event' && msg.canvas_id) {
-              // User event from browser → inject as message for agent
-              const session = getCanvas(msg.canvas_id);
-              if (!session) return;
-
-              // Resolve chatJid if empty
-              const chatJid = session.chatJid || resolveChatJidForGroup(session.group);
-              if (!chatJid) {
-                logger.warn({ canvas_id: msg.canvas_id }, 'Canvas event dropped: no chatJid');
-                return;
-              }
-
-              const eventId = `canvas-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-              const dataStr = JSON.stringify(msg.data || {});
-              const content = `<canvas-event canvas_id="${msg.canvas_id}" type="${msg.event || 'interaction'}">\n${dataStr}\n</canvas-event>`;
-
-              storeMessageDirect({
-                id: eventId,
-                chat_jid: chatJid,
-                sender: 'canvas-ui',
-                sender_name: 'Canvas UI',
-                content,
-                timestamp: new Date().toISOString(),
-                is_from_me: true,
-              });
-            }
-          } catch (err) {
-            logger.debug({ err }, 'Invalid WS message from canvas client');
+          if (msg.type === 'ping') {
+            ws.send(JSON.stringify({ type: 'pong' }));
+            return;
           }
-        });
 
-        ws.on('close', () => {
-          removeSubscriber(ws);
-        });
+          if (msg.type === 'subscribe' && msg.canvas_id) {
+            // Late subscription
+            removeSubscriber(ws);
+            addSubscriber(msg.canvas_id, ws);
+            const session = getCanvas(msg.canvas_id);
+            if (session) {
+              ws.send(
+                JSON.stringify({
+                  type: 'create',
+                  canvas_id: msg.canvas_id,
+                  jsx: session.jsx,
+                  state: session.state,
+                  title: session.title,
+                }),
+              );
+            }
+            return;
+          }
 
-        ws.on('error', (err) => {
-          logger.debug({ err }, 'Canvas WS error');
-          removeSubscriber(ws);
-        });
-      },
-    );
+          if (msg.type === 'event' && msg.canvas_id) {
+            // User event from browser → inject as message for agent
+            const session = getCanvas(msg.canvas_id);
+            if (!session) return;
+
+            // Resolve chatJid if empty
+            const chatJid =
+              session.chatJid || resolveChatJidForGroup(session.group);
+            if (!chatJid) {
+              logger.warn(
+                { canvas_id: msg.canvas_id },
+                'Canvas event dropped: no chatJid',
+              );
+              return;
+            }
+
+            const eventId = `canvas-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+            const dataStr = JSON.stringify(msg.data || {});
+            const content = `<canvas-event canvas_id="${msg.canvas_id}" type="${msg.event || 'interaction'}">\n${dataStr}\n</canvas-event>`;
+
+            storeMessageDirect({
+              id: eventId,
+              chat_jid: chatJid,
+              sender: 'canvas-ui',
+              sender_name: 'Canvas UI',
+              content,
+              timestamp: new Date().toISOString(),
+              is_from_me: true,
+            });
+          }
+        } catch (err) {
+          logger.debug({ err }, 'Invalid WS message from canvas client');
+        }
+      });
+
+      ws.on('close', () => {
+        removeSubscriber(ws);
+      });
+
+      ws.on('error', (err) => {
+        logger.debug({ err }, 'Canvas WS error');
+        removeSubscriber(ws);
+      });
+    });
 
     // Periodic cleanup
     const cleanupInterval = setInterval(() => {
@@ -526,35 +535,48 @@ export function startCanvasServer(port = CANVAS_PORT): Promise<Server> {
     // --- Redis pub/sub for fast canvas updates from agents ---
     try {
       const secrets = readEnvFile(['REDIS_URL']);
-      const redisUrl = secrets.REDIS_URL || process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+      const redisUrl =
+        secrets.REDIS_URL || process.env.REDIS_URL || 'redis://127.0.0.1:6379';
       const redisSub = new IORedis(redisUrl, {
         retryStrategy: (times: number) => Math.min(times * 500, 5000),
         lazyConnect: true,
       });
 
-      redisSub.connect().then(() => {
-        redisSub.subscribe(CANVAS_REDIS_CHANNEL).then(() => {
-          logger.info({ channel: CANVAS_REDIS_CHANNEL }, 'Canvas Redis subscriber active');
-        }).catch((err: unknown) => {
-          logger.warn({ err }, 'Failed to subscribe to canvas Redis channel');
-        });
+      redisSub
+        .connect()
+        .then(() => {
+          redisSub
+            .subscribe(CANVAS_REDIS_CHANNEL)
+            .then(() => {
+              logger.info(
+                { channel: CANVAS_REDIS_CHANNEL },
+                'Canvas Redis subscriber active',
+              );
+            })
+            .catch((err: unknown) => {
+              logger.warn(
+                { err },
+                'Failed to subscribe to canvas Redis channel',
+              );
+            });
 
-        redisSub.on('message', (_channel: string, message: string) => {
-          try {
-            const data = JSON.parse(message);
-            if (!data.canvas_id || !data.action) return;
+          redisSub.on('message', (_channel: string, message: string) => {
+            try {
+              const data = JSON.parse(message);
+              if (!data.canvas_id || !data.action) return;
 
-            // Process same as IPC
-            const chatJid = data.chatJid || '';
-            const group = data.group || '';
-            handleCanvasIpc(group, chatJid, data);
-          } catch (err) {
-            logger.debug({ err }, 'Invalid canvas Redis message');
-          }
+              // Process same as IPC
+              const chatJid = data.chatJid || '';
+              const group = data.group || '';
+              handleCanvasIpc(group, chatJid, data);
+            } catch (err) {
+              logger.debug({ err }, 'Invalid canvas Redis message');
+            }
+          });
+        })
+        .catch((err: unknown) => {
+          logger.warn({ err }, 'Canvas Redis connection failed (non-fatal)');
         });
-      }).catch((err: unknown) => {
-        logger.warn({ err }, 'Canvas Redis connection failed (non-fatal)');
-      });
 
       server.on('close', () => {
         redisSub.disconnect();

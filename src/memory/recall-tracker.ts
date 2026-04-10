@@ -61,21 +61,97 @@ function today(): string {
 
 function extractConcepts(text: string, maxTags = 8): string[] {
   const STOP_WORDS = new Set([
-    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
-    'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
-    'should', 'may', 'might', 'shall', 'can', 'need', 'dare', 'ought',
-    'used', 'to', 'of', 'in', 'for', 'on', 'with', 'at', 'by', 'from',
-    'as', 'into', 'through', 'during', 'before', 'after', 'above', 'below',
-    'between', 'out', 'off', 'over', 'under', 'again', 'further', 'then',
-    'once', 'и', 'в', 'на', 'с', 'по', 'для', 'что', 'это', 'как', 'не',
-    'но', 'да', 'он', 'она', 'они', 'мы', 'вы', 'я', 'ты', 'его', 'её',
-    'их', 'был', 'была', 'были', 'будет', 'если', 'или', 'то', 'так',
+    'the',
+    'a',
+    'an',
+    'is',
+    'are',
+    'was',
+    'were',
+    'be',
+    'been',
+    'being',
+    'have',
+    'has',
+    'had',
+    'do',
+    'does',
+    'did',
+    'will',
+    'would',
+    'could',
+    'should',
+    'may',
+    'might',
+    'shall',
+    'can',
+    'need',
+    'dare',
+    'ought',
+    'used',
+    'to',
+    'of',
+    'in',
+    'for',
+    'on',
+    'with',
+    'at',
+    'by',
+    'from',
+    'as',
+    'into',
+    'through',
+    'during',
+    'before',
+    'after',
+    'above',
+    'below',
+    'between',
+    'out',
+    'off',
+    'over',
+    'under',
+    'again',
+    'further',
+    'then',
+    'once',
+    'и',
+    'в',
+    'на',
+    'с',
+    'по',
+    'для',
+    'что',
+    'это',
+    'как',
+    'не',
+    'но',
+    'да',
+    'он',
+    'она',
+    'они',
+    'мы',
+    'вы',
+    'я',
+    'ты',
+    'его',
+    'её',
+    'их',
+    'был',
+    'была',
+    'были',
+    'будет',
+    'если',
+    'или',
+    'то',
+    'так',
   ]);
 
-  const words = text.toLowerCase()
+  const words = text
+    .toLowerCase()
     .replace(/[^a-zа-яё0-9\s_-]/gi, ' ')
     .split(/\s+/)
-    .filter(w => w.length > 3 && !STOP_WORDS.has(w));
+    .filter((w) => w.length > 3 && !STOP_WORDS.has(w));
 
   // Count frequency
   const freq = new Map<string, number>();
@@ -116,7 +192,9 @@ export function saveRecallStore(groupDir: string, store: RecallStore): void {
   try {
     const { chmodSync } = require('fs');
     chmodSync(path, 0o666);
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 /**
@@ -158,10 +236,9 @@ export function trackRecall(
     entry.lastRecalled = new Date().toISOString();
 
     // Update average score
-    entry.avgScore = (
+    entry.avgScore =
       (entry.avgScore * (entry.recallCount - 1) + result.score) /
-      entry.recallCount
-    );
+      entry.recallCount;
 
     // Add query hash (dedup, max 32)
     if (!entry.queryHashes.includes(queryHash)) {
@@ -200,7 +277,7 @@ export function getTopRecallCandidates(
   const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
 
   return Object.values(store.entries)
-    .filter(e => now - new Date(e.firstSeen).getTime() < maxAgeMs)
+    .filter((e) => now - new Date(e.firstSeen).getTime() < maxAgeMs)
     .sort((a, b) => {
       // Simple composite score for candidate ranking
       const scoreA = a.recallCount * a.avgScore * a.queryHashes.length;

@@ -12,7 +12,10 @@
 
 /** Generate a 32-bit SimHash fingerprint for text. */
 function simhash(text: string): number {
-  const words = text.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+  const words = text
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((w) => w.length > 2);
   if (words.length === 0) return 0;
 
   const bits = 32;
@@ -61,7 +64,10 @@ function hammingDistance(a: number, b: number): number {
 
 /** Generate word shingles (n-grams of words). */
 function shingles(text: string, n = 3): Set<string> {
-  const words = text.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+  const words = text
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((w) => w.length > 2);
   const result = new Set<string>();
   for (let i = 0; i <= words.length - n; i++) {
     result.add(words.slice(i, i + n).join(' '));
@@ -107,7 +113,11 @@ export function dedup3Stage(
   if (entries.length === 0) return { unique: [], duplicates: [] };
 
   const unique: DedupEntry[] = [];
-  const duplicates: Array<{ entry: DedupEntry; duplicateOf: string; stage: number }> = [];
+  const duplicates: Array<{
+    entry: DedupEntry;
+    duplicateOf: string;
+    stage: number;
+  }> = [];
 
   // Pre-compute fingerprints and shingles for all entries
   const fingerprints: number[] = [];
@@ -162,11 +172,9 @@ export function dedup3Stage(
 /**
  * Convenience wrapper for RecallEntry dedup.
  */
-export function dedupRecallEntries<T extends { contentHash: string; snippet: string }>(
-  entries: T[],
-  simhashThreshold = 3,
-  jaccardThreshold = 0.85,
-): T[] {
+export function dedupRecallEntries<
+  T extends { contentHash: string; snippet: string },
+>(entries: T[], simhashThreshold = 3, jaccardThreshold = 0.85): T[] {
   if (entries.length <= 1) return entries;
 
   const dedupInput: DedupEntry[] = entries.map((e) => ({

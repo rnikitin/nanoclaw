@@ -23,7 +23,9 @@ describe('dedup3Stage', () => {
     });
 
     it('returns single entry as unique', () => {
-      const entries = [makeEntry('a', 'The quick brown fox jumps over the lazy dog')];
+      const entries = [
+        makeEntry('a', 'The quick brown fox jumps over the lazy dog'),
+      ];
       const result = dedup3Stage(entries);
 
       expect(result.unique).toHaveLength(1);
@@ -34,11 +36,9 @@ describe('dedup3Stage', () => {
 
   describe('exact duplicates (Stage 1 - SimHash)', () => {
     it('catches identical text as duplicate', () => {
-      const text = 'The quick brown fox jumps over the lazy dog near the river bank';
-      const entries = [
-        makeEntry('original', text),
-        makeEntry('copy', text),
-      ];
+      const text =
+        'The quick brown fox jumps over the lazy dog near the river bank';
+      const entries = [makeEntry('original', text), makeEntry('copy', text)];
 
       const result = dedup3Stage(entries);
 
@@ -52,8 +52,14 @@ describe('dedup3Stage', () => {
 
     it('catches near-identical text differing by one word at SimHash stage', () => {
       const entries = [
-        makeEntry('a', 'The trading strategy uses momentum indicators for market analysis today'),
-        makeEntry('b', 'The trading strategy uses momentum indicators for market analysis yesterday'),
+        makeEntry(
+          'a',
+          'The trading strategy uses momentum indicators for market analysis today',
+        ),
+        makeEntry(
+          'b',
+          'The trading strategy uses momentum indicators for market analysis yesterday',
+        ),
       ];
 
       const result = dedup3Stage(entries);
@@ -65,7 +71,8 @@ describe('dedup3Stage', () => {
     });
 
     it('all identical entries collapse to one unique', () => {
-      const text = 'Repeated insight about neural network training loop optimization strategies';
+      const text =
+        'Repeated insight about neural network training loop optimization strategies';
       const entries = Array.from({ length: 10 }, (_, i) =>
         makeEntry(`entry-${i}`, text),
       );
@@ -121,7 +128,8 @@ describe('dedup3Stage', () => {
 
     it('entries caught at stage 2 have stage=2 in result', () => {
       // Build long overlapping texts that definitely pass Jaccard >= 0.85
-      const words = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango';
+      const words =
+        'alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango';
       const entries = [
         makeEntry('a', words),
         makeEntry('b', words + ' uniform'),
@@ -139,9 +147,18 @@ describe('dedup3Stage', () => {
   describe('distinct entries', () => {
     it('returns all distinct entries as unique', () => {
       const entries = [
-        makeEntry('a', 'The weather forecast predicts rain tomorrow across the entire northern region'),
-        makeEntry('b', 'Quantum computing leverages entanglement for parallel processing of complex algorithms'),
-        makeEntry('c', 'Mediterranean cuisine uses olive oil, herbs, and fresh vegetables as primary ingredients'),
+        makeEntry(
+          'a',
+          'The weather forecast predicts rain tomorrow across the entire northern region',
+        ),
+        makeEntry(
+          'b',
+          'Quantum computing leverages entanglement for parallel processing of complex algorithms',
+        ),
+        makeEntry(
+          'c',
+          'Mediterranean cuisine uses olive oil, herbs, and fresh vegetables as primary ingredients',
+        ),
       ];
 
       const result = dedup3Stage(entries);
@@ -152,23 +169,33 @@ describe('dedup3Stage', () => {
 
     it('preserves order of unique entries', () => {
       const entries = [
-        makeEntry('first', 'Compilers transform source code into machine executable binary formats'),
-        makeEntry('second', 'Photosynthesis converts sunlight energy into glucose molecules within plant cells'),
-        makeEntry('third', 'Database indexing accelerates query performance through balanced tree structures'),
+        makeEntry(
+          'first',
+          'Compilers transform source code into machine executable binary formats',
+        ),
+        makeEntry(
+          'second',
+          'Photosynthesis converts sunlight energy into glucose molecules within plant cells',
+        ),
+        makeEntry(
+          'third',
+          'Database indexing accelerates query performance through balanced tree structures',
+        ),
       ];
 
       const result = dedup3Stage(entries);
 
-      expect(result.unique.map((e) => e.id)).toEqual(['first', 'second', 'third']);
+      expect(result.unique.map((e) => e.id)).toEqual([
+        'first',
+        'second',
+        'third',
+      ]);
     });
   });
 
   describe('short text (< 3 words)', () => {
     it('handles single-word entries gracefully', () => {
-      const entries = [
-        makeEntry('a', 'hello'),
-        makeEntry('b', 'world'),
-      ];
+      const entries = [makeEntry('a', 'hello'), makeEntry('b', 'world')];
 
       const result = dedup3Stage(entries);
 
@@ -187,10 +214,7 @@ describe('dedup3Stage', () => {
     });
 
     it('handles empty-text entries', () => {
-      const entries = [
-        makeEntry('a', ''),
-        makeEntry('b', ''),
-      ];
+      const entries = [makeEntry('a', ''), makeEntry('b', '')];
 
       const result = dedup3Stage(entries);
 
@@ -216,11 +240,9 @@ describe('dedup3Stage', () => {
 
   describe('stage attribution', () => {
     it('exact duplicates are caught at stage 1', () => {
-      const text = 'A sufficiently long sentence about trading strategies and market patterns to ensure simhash works';
-      const entries = [
-        makeEntry('orig', text),
-        makeEntry('dupe', text),
-      ];
+      const text =
+        'A sufficiently long sentence about trading strategies and market patterns to ensure simhash works';
+      const entries = [makeEntry('orig', text), makeEntry('dupe', text)];
 
       const result = dedup3Stage(entries);
 
@@ -229,7 +251,8 @@ describe('dedup3Stage', () => {
     });
 
     it('duplicateOf references the correct surviving entry', () => {
-      const text = 'Repeated analysis of cryptocurrency market trends during high volatility periods';
+      const text =
+        'Repeated analysis of cryptocurrency market trends during high volatility periods';
       const entries = [
         makeEntry('survivor', text),
         makeEntry('dup1', text),
@@ -248,17 +271,20 @@ describe('dedup3Stage', () => {
 
   describe('mixed batch of duplicates and uniques', () => {
     it('correctly separates a mixed batch', () => {
-      const textA = 'Machine learning models require careful hyperparameter tuning for optimal performance in production';
-      const textB = 'The Rust programming language ensures memory safety without garbage collection overhead';
-      const textC = 'Distributed systems face challenges with network partitions and eventual consistency models';
+      const textA =
+        'Machine learning models require careful hyperparameter tuning for optimal performance in production';
+      const textB =
+        'The Rust programming language ensures memory safety without garbage collection overhead';
+      const textC =
+        'Distributed systems face challenges with network partitions and eventual consistency models';
 
       const entries = [
         makeEntry('a1', textA),
         makeEntry('b1', textB),
-        makeEntry('a2', textA),   // dup of a1
+        makeEntry('a2', textA), // dup of a1
         makeEntry('c1', textC),
-        makeEntry('b2', textB),   // dup of b1
-        makeEntry('a3', textA),   // dup of a1
+        makeEntry('b2', textB), // dup of b1
+        makeEntry('a3', textA), // dup of a1
       ];
 
       const result = dedup3Stage(entries);
@@ -281,8 +307,14 @@ describe('dedup3Stage', () => {
   describe('threshold edge cases', () => {
     it('simhashThreshold=0 only catches exact fingerprint matches', () => {
       const entries = [
-        makeEntry('a', 'The quick brown fox jumps over the lazy dog in the park'),
-        makeEntry('b', 'The quick brown fox leaps over the lazy dog in the park'),
+        makeEntry(
+          'a',
+          'The quick brown fox jumps over the lazy dog in the park',
+        ),
+        makeEntry(
+          'b',
+          'The quick brown fox leaps over the lazy dog in the park',
+        ),
       ];
 
       // With threshold=0, only exact simhash matches are caught at stage 1
@@ -292,13 +324,21 @@ describe('dedup3Stage', () => {
       const loose = dedup3Stage(entries, 10, 0.99);
 
       // With very loose simhash threshold, more things should be caught
-      expect(loose.duplicates.length).toBeGreaterThanOrEqual(strict.duplicates.length);
+      expect(loose.duplicates.length).toBeGreaterThanOrEqual(
+        strict.duplicates.length,
+      );
     });
 
     it('jaccardThreshold=1.0 requires perfect shingle match', () => {
       const entries = [
-        makeEntry('a', 'alpha beta gamma delta epsilon zeta eta theta iota kappa'),
-        makeEntry('b', 'alpha beta gamma delta epsilon zeta eta theta iota lambda'),
+        makeEntry(
+          'a',
+          'alpha beta gamma delta epsilon zeta eta theta iota kappa',
+        ),
+        makeEntry(
+          'b',
+          'alpha beta gamma delta epsilon zeta eta theta iota lambda',
+        ),
       ];
 
       // With threshold 1.0 and simhash threshold 0, only perfect matches pass
@@ -312,8 +352,14 @@ describe('dedup3Stage', () => {
 
     it('jaccardThreshold=0.0 catches everything at stage 2', () => {
       const entries = [
-        makeEntry('a', 'completely different text about astronomy and black holes'),
-        makeEntry('b', 'unrelated content discussing marine biology coral reefs'),
+        makeEntry(
+          'a',
+          'completely different text about astronomy and black holes',
+        ),
+        makeEntry(
+          'b',
+          'unrelated content discussing marine biology coral reefs',
+        ),
       ];
 
       // Simhash threshold 0 but Jaccard threshold 0.0 means any non-zero overlap triggers
@@ -329,8 +375,14 @@ describe('dedup3Stage', () => {
 
     it('large simhashThreshold catches distant fingerprints', () => {
       const entries = [
-        makeEntry('a', 'alpha beta gamma delta epsilon zeta eta theta iota kappa'),
-        makeEntry('b', 'completely different sentence about something else entirely now'),
+        makeEntry(
+          'a',
+          'alpha beta gamma delta epsilon zeta eta theta iota kappa',
+        ),
+        makeEntry(
+          'b',
+          'completely different sentence about something else entirely now',
+        ),
       ];
 
       // With threshold 32 (max bits), everything matches at stage 1
@@ -350,7 +402,9 @@ describe('dedupRecallEntries', () => {
   });
 
   it('returns single entry unchanged', () => {
-    const entries = [makeRecallEntry('hash1', 'some snippet about trading strategies')];
+    const entries = [
+      makeRecallEntry('hash1', 'some snippet about trading strategies'),
+    ];
     const result = dedupRecallEntries(entries);
 
     expect(result).toHaveLength(1);
@@ -358,7 +412,8 @@ describe('dedupRecallEntries', () => {
   });
 
   it('filters duplicate snippets', () => {
-    const snippet = 'Analysis of market trends shows consistent momentum patterns over multiple timeframes';
+    const snippet =
+      'Analysis of market trends shows consistent momentum patterns over multiple timeframes';
     const entries = [
       makeRecallEntry('hash1', snippet),
       makeRecallEntry('hash2', snippet),
@@ -373,9 +428,18 @@ describe('dedupRecallEntries', () => {
 
   it('preserves distinct entries', () => {
     const entries = [
-      makeRecallEntry('h1', 'Neural networks learn hierarchical feature representations from raw input data'),
-      makeRecallEntry('h2', 'Kubernetes orchestrates container workloads across distributed cluster nodes efficiently'),
-      makeRecallEntry('h3', 'GraphQL provides flexible querying interface for frontend application data retrieval'),
+      makeRecallEntry(
+        'h1',
+        'Neural networks learn hierarchical feature representations from raw input data',
+      ),
+      makeRecallEntry(
+        'h2',
+        'Kubernetes orchestrates container workloads across distributed cluster nodes efficiently',
+      ),
+      makeRecallEntry(
+        'h3',
+        'GraphQL provides flexible querying interface for frontend application data retrieval',
+      ),
     ];
 
     const result = dedupRecallEntries(entries);
@@ -384,8 +448,21 @@ describe('dedupRecallEntries', () => {
 
   it('preserves extra fields on recall entries', () => {
     const entries = [
-      { contentHash: 'h1', snippet: 'unique text about quantum computing research advances', source: 'memory/quantum.md', score: 0.95, extra: 'preserved' },
-      { contentHash: 'h2', snippet: 'different text about compiler optimization techniques and passes', source: 'memory/compilers.md', score: 0.80, extra: 'also kept' },
+      {
+        contentHash: 'h1',
+        snippet: 'unique text about quantum computing research advances',
+        source: 'memory/quantum.md',
+        score: 0.95,
+        extra: 'preserved',
+      },
+      {
+        contentHash: 'h2',
+        snippet:
+          'different text about compiler optimization techniques and passes',
+        source: 'memory/compilers.md',
+        score: 0.8,
+        extra: 'also kept',
+      },
     ];
 
     const result = dedupRecallEntries(entries);
@@ -396,7 +473,8 @@ describe('dedupRecallEntries', () => {
   });
 
   it('uses contentHash as id for dedup mapping', () => {
-    const snippet = 'Identical snippet about reinforcement learning reward shaping and policy gradients';
+    const snippet =
+      'Identical snippet about reinforcement learning reward shaping and policy gradients';
     const entries = [
       makeRecallEntry('unique-hash-1', snippet),
       makeRecallEntry('unique-hash-2', snippet),
@@ -411,8 +489,14 @@ describe('dedupRecallEntries', () => {
 
   it('respects custom thresholds', () => {
     const entries = [
-      makeRecallEntry('h1', 'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda'),
-      makeRecallEntry('h2', 'alpha beta gamma delta epsilon zeta eta theta iota kappa mu'),
+      makeRecallEntry(
+        'h1',
+        'alpha beta gamma delta epsilon zeta eta theta iota kappa lambda',
+      ),
+      makeRecallEntry(
+        'h2',
+        'alpha beta gamma delta epsilon zeta eta theta iota kappa mu',
+      ),
     ];
 
     // Very strict thresholds — should keep both
@@ -424,8 +508,10 @@ describe('dedupRecallEntries', () => {
   });
 
   it('handles mixed batch correctly', () => {
-    const snippetA = 'Deep learning architectures benefit from batch normalization during training loops';
-    const snippetB = 'PostgreSQL supports advanced indexing strategies including GIN and GiST indexes';
+    const snippetA =
+      'Deep learning architectures benefit from batch normalization during training loops';
+    const snippetB =
+      'PostgreSQL supports advanced indexing strategies including GIN and GiST indexes';
 
     const entries = [
       makeRecallEntry('a1', snippetA),

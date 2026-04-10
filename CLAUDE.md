@@ -19,6 +19,15 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 | `src/task-scheduler.ts` | Runs scheduled tasks |
 | `src/db.ts` | SQLite operations |
 | `src/transcription.ts` | Voice transcription via OpenAI Whisper API |
+| `src/skill-promoter.ts` | Auto-skill lifecycle: draft → local → global |
+| `src/memory/dreaming.ts` | 3-phase dreaming engine (light/REM/deep) |
+| `src/memory/dreaming-scheduler.ts` | Schedule: light 6h, deep 3AM, REM Sun 5AM |
+| `src/memory/recall-tracker.ts` | Records memory_search usage for dreaming scoring |
+| `src/memory/promotion-scorer.ts` | 6-weight scoring for memory promotion |
+| `src/memory/knowledge-graph.ts` | SQLite graph from [[wikilinks]] |
+| `src/memory/spreading-activation.ts` | BFS graph traversal for retrieval augmentation |
+| `container/agent-runner/src/index.ts` | Container-side agent runner (active recall, hooks) |
+| `container/agent-runner/src/memory-mcp-stdio.ts` | MCP server: memory_search, memory_graph |
 | `groups/{name}/CLAUDE.md` | Per-group memory (isolated) |
 | `container/skills/agent-browser.md` | Browser automation tool (available to all agents via Bash) |
 

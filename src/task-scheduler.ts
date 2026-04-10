@@ -19,10 +19,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
-import {
-  getRunningScriptTaskIds,
-  runScriptTask,
-} from './script-runner.js';
+import { getRunningScriptTaskIds, runScriptTask } from './script-runner.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 /**
@@ -202,7 +199,10 @@ async function runTask(
     const scheduleClose = () => {
       if (closeTimer) return; // already scheduled
       closeTimer = setTimeout(() => {
-        logger.debug({ taskId: task.id }, 'Closing task container after result');
+        logger.debug(
+          { taskId: task.id },
+          'Closing task container after result',
+        );
         deps.queue.closeStdin(task.chat_jid);
         // Safety net: force-stop if container doesn't exit after _close
         forceStopTimer = setTimeout(() => {

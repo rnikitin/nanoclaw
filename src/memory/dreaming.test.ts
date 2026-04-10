@@ -1,9 +1,22 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from 'fs';
+import {
+  mkdtempSync,
+  rmSync,
+  existsSync,
+  readFileSync,
+  mkdirSync,
+  writeFileSync,
+} from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { trackRecall } from './recall-tracker.js';
-import { lightSleep, remSleep, deepSleep, dreamCycle, setupGroupDreaming } from './dreaming.js';
+import {
+  lightSleep,
+  remSleep,
+  deepSleep,
+  dreamCycle,
+  setupGroupDreaming,
+} from './dreaming.js';
 
 describe('Dreaming', () => {
   let groupDir: string;
@@ -125,7 +138,8 @@ describe('Dreaming', () => {
 
     it('promotes highly recalled candidates to MEMORY.md', () => {
       // Create a candidate with enough recalls to pass thresholds
-      const content = 'Critical trading insight: always check ADX before entering ranging markets to avoid false breakouts';
+      const content =
+        'Critical trading insight: always check ADX before entering ranging markets to avoid false breakouts';
       for (let i = 0; i < 15; i++) {
         trackRecall(groupDir, `unique trading query ${i}`, [
           { source: 'knowledge.md', content, score: 0.95 },
@@ -148,7 +162,11 @@ describe('Dreaming', () => {
     it('rejects candidates below thresholds', () => {
       // Single recall — not enough for promotion
       trackRecall(groupDir, 'single query', [
-        { source: 'test.md', content: 'weakly recalled content about something', score: 0.3 },
+        {
+          source: 'test.md',
+          content: 'weakly recalled content about something',
+          score: 0.3,
+        },
       ]);
 
       const result = deepSleep(groupDir);
@@ -189,7 +207,9 @@ describe('Dreaming', () => {
       expect(existsSync(signalsPath)).toBe(true);
 
       const signals = JSON.parse(readFileSync(signalsPath, 'utf-8'));
-      const lightSignals = signals.signals.filter((s: any) => s.phase === 'light');
+      const lightSignals = signals.signals.filter(
+        (s: any) => s.phase === 'light',
+      );
       expect(lightSignals.length).toBeGreaterThan(0);
     });
   });
@@ -202,11 +222,17 @@ describe('Dreaming', () => {
       setupGroupDreaming(newGroupDir);
 
       expect(existsSync(join(newGroupDir, '.dreams'))).toBe(true);
-      expect(existsSync(join(newGroupDir, '.dreams', 'light-sleep'))).toBe(true);
+      expect(existsSync(join(newGroupDir, '.dreams', 'light-sleep'))).toBe(
+        true,
+      );
       expect(existsSync(join(newGroupDir, '.dreams', 'rem-sleep'))).toBe(true);
       expect(existsSync(join(newGroupDir, '.dreams', 'deep-sleep'))).toBe(true);
-      expect(existsSync(join(newGroupDir, '.dreams', 'short-term-recall.json'))).toBe(true);
-      expect(existsSync(join(newGroupDir, '.dreams', 'phase-signals.json'))).toBe(true);
+      expect(
+        existsSync(join(newGroupDir, '.dreams', 'short-term-recall.json')),
+      ).toBe(true);
+      expect(
+        existsSync(join(newGroupDir, '.dreams', 'phase-signals.json')),
+      ).toBe(true);
 
       rmSync(newGroupDir, { recursive: true, force: true });
     });
@@ -215,7 +241,9 @@ describe('Dreaming', () => {
       setupGroupDreaming(groupDir);
       setupGroupDreaming(groupDir); // second call should not error
 
-      expect(existsSync(join(groupDir, '.dreams', 'short-term-recall.json'))).toBe(true);
+      expect(
+        existsSync(join(groupDir, '.dreams', 'short-term-recall.json')),
+      ).toBe(true);
     });
 
     it('does not overwrite existing data', () => {
@@ -224,15 +252,21 @@ describe('Dreaming', () => {
         { source: 'test.md', content: 'existing recall data', score: 0.9 },
       ]);
 
-      const storeBefore = JSON.parse(readFileSync(
-        join(groupDir, '.dreams', 'short-term-recall.json'), 'utf-8',
-      ));
+      const storeBefore = JSON.parse(
+        readFileSync(
+          join(groupDir, '.dreams', 'short-term-recall.json'),
+          'utf-8',
+        ),
+      );
 
       setupGroupDreaming(groupDir);
 
-      const storeAfter = JSON.parse(readFileSync(
-        join(groupDir, '.dreams', 'short-term-recall.json'), 'utf-8',
-      ));
+      const storeAfter = JSON.parse(
+        readFileSync(
+          join(groupDir, '.dreams', 'short-term-recall.json'),
+          'utf-8',
+        ),
+      );
 
       // Should NOT have overwritten existing data
       expect(Object.keys(storeAfter.entries)).toHaveLength(

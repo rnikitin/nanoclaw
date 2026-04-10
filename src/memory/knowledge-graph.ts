@@ -55,7 +55,8 @@ function getDbPath(groupDir: string): string {
 
 function openDb(groupDir: string): Database.Database {
   const dreamsDir = join(groupDir, '.dreams');
-  if (!existsSync(dreamsDir)) mkdirSync(dreamsDir, { recursive: true, mode: 0o777 });
+  if (!existsSync(dreamsDir))
+    mkdirSync(dreamsDir, { recursive: true, mode: 0o777 });
 
   const dbPath = getDbPath(groupDir);
   const db = new Database(dbPath);
@@ -94,7 +95,9 @@ function openDb(groupDir: string): Database.Database {
 // ─── Entity Extraction ───────────────────────────────────────
 
 /** Extract [[wikilink]] references from markdown text. */
-function extractWikilinks(text: string): Array<{ raw: string; type: string; name: string }> {
+function extractWikilinks(
+  text: string,
+): Array<{ raw: string; type: string; name: string }> {
   const results: Array<{ raw: string; type: string; name: string }> = [];
   const re = /\[\[([^\]]+)\]\]/g;
   let match;
@@ -104,10 +107,15 @@ function extractWikilinks(text: string): Array<{ raw: string; type: string; name
     const parts = raw.split('/');
     if (parts.length >= 2) {
       const typeMap: Record<string, string> = {
-        people: 'person', person: 'person', persons: 'person',
-        projects: 'project', project: 'project',
-        decisions: 'decision', decision: 'decision',
-        tasks: 'task', task: 'task',
+        people: 'person',
+        person: 'person',
+        persons: 'person',
+        projects: 'project',
+        project: 'project',
+        decisions: 'decision',
+        decision: 'decision',
+        tasks: 'task',
+        task: 'task',
       };
       const type = typeMap[parts[0].toLowerCase()] || 'concept';
       const name = parts.slice(1).join('/');
@@ -284,7 +292,11 @@ export function buildGraph(groupDir: string): {
     transaction();
 
     logger.info(
-      { group: basename(groupDir), entities: entityCount, relations: relationCount },
+      {
+        group: basename(groupDir),
+        entities: entityCount,
+        relations: relationCount,
+      },
       'Knowledge graph rebuilt',
     );
 
@@ -310,22 +322,40 @@ export function queryEntity(
     if (!entity) return null;
 
     const outgoing = db
-      .prepare(`
+      .prepare(
+        `
         SELECT r.*, e.type, e.name as entity_name, e.importance, e.mention_count
         FROM relations r
         JOIN entities e ON e.name = r.to_entity
         WHERE r.from_entity = ? COLLATE NOCASE
-      `)
-      .all(entityName) as Array<Relation & { type: string; entity_name: string; importance: number; mention_count: number }>;
+      `,
+      )
+      .all(entityName) as Array<
+      Relation & {
+        type: string;
+        entity_name: string;
+        importance: number;
+        mention_count: number;
+      }
+    >;
 
     const incoming = db
-      .prepare(`
+      .prepare(
+        `
         SELECT r.*, e.type, e.name as entity_name, e.importance, e.mention_count
         FROM relations r
         JOIN entities e ON e.name = r.from_entity
         WHERE r.to_entity = ? COLLATE NOCASE
-      `)
-      .all(entityName) as Array<Relation & { type: string; entity_name: string; importance: number; mention_count: number }>;
+      `,
+      )
+      .all(entityName) as Array<
+      Relation & {
+        type: string;
+        entity_name: string;
+        importance: number;
+        mention_count: number;
+      }
+    >;
 
     const relations = [
       ...outgoing.map((r) => ({
@@ -367,15 +397,14 @@ export function queryEntity(
 /**
  * Find all entities of a given type.
  */
-export function listEntities(
-  groupDir: string,
-  type?: string,
-): Entity[] {
+export function listEntities(groupDir: string, type?: string): Entity[] {
   const db = openDb(groupDir);
   try {
     if (type) {
       return db
-        .prepare('SELECT * FROM entities WHERE type = ? ORDER BY mention_count DESC')
+        .prepare(
+          'SELECT * FROM entities WHERE type = ? ORDER BY mention_count DESC',
+        )
         .all(type) as Entity[];
     }
     return db
@@ -400,7 +429,12 @@ export function findPath(
     const paths: string[][] = [];
     const visited = new Set<string>();
 
-    function dfs(current: string, target: string, path: string[], depth: number): void {
+    function dfs(
+      current: string,
+      target: string,
+      path: string[],
+      depth: number,
+    ): void {
       if (depth > maxDepth) return;
       if (current.toLowerCase() === target.toLowerCase()) {
         paths.push([...path]);
@@ -410,11 +444,13 @@ export function findPath(
       visited.add(current.toLowerCase());
 
       const neighbors = db
-        .prepare(`
+        .prepare(
+          `
           SELECT to_entity as neighbor FROM relations WHERE from_entity = ? COLLATE NOCASE
           UNION
           SELECT from_entity as neighbor FROM relations WHERE to_entity = ? COLLATE NOCASE
-        `)
+        `,
+        )
         .all(current, current) as Array<{ neighbor: string }>;
 
       for (const { neighbor } of neighbors) {
@@ -444,8 +480,12 @@ export function getGraphStats(groupDir: string): {
   }
   const db = openDb(groupDir);
   try {
-    const entities = (db.prepare('SELECT COUNT(*) as c FROM entities').get() as { c: number }).c;
-    const relations = (db.prepare('SELECT COUNT(*) as c FROM relations').get() as { c: number }).c;
+    const entities = (
+      db.prepare('SELECT COUNT(*) as c FROM entities').get() as { c: number }
+    ).c;
+    const relations = (
+      db.prepare('SELECT COUNT(*) as c FROM relations').get() as { c: number }
+    ).c;
     const types = db
       .prepare('SELECT type, COUNT(*) as c FROM entities GROUP BY type')
       .all() as Array<{ type: string; c: number }>;

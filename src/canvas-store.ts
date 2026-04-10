@@ -1,9 +1,14 @@
 /**
- * Canvas State Store — in-memory storage for active canvas sessions.
+ * Canvas State Store — SQLite-backed storage for canvas sessions.
  *
- * Tracks JSX code, state, and metadata for each canvas. Supports
- * TTL-based cleanup of inactive canvases.
+ * Persists JSX code, state, and metadata across restarts.
+ * TTL-based cleanup of inactive canvases (24h default).
  */
+import Database from 'better-sqlite3';
+import path from 'path';
+import fs from 'fs';
+
+import { STORE_DIR } from './config.js';
 
 export interface CanvasSession {
   canvasId: string;
@@ -16,9 +21,73 @@ export interface CanvasSession {
   updatedAt: number;
 }
 
-const store = new Map<string, CanvasSession>();
+const CANVAS_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-const CANVAS_TTL_MS = 60 * 60 * 1000; // 1 hour
+let db: Database.Database;
+
+// In-memory cache for fast reads
+const cache = new Map<string, CanvasSession>();
+
+export function initCanvasStore(): void {
+  const dbPath = path.join(STORE_DIR, 'canvas.db');
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+
+  db = new Database(dbPath);
+  db.pragma('journal_mode = WAL');
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS canvases (
+      canvas_id TEXT PRIMARY KEY,
+      "group" TEXT NOT NULL,
+      chat_jid TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL DEFAULT 'Canvas',
+      jsx TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `);
+
+  // Load all into cache
+  const rows = db
+    .prepare('SELECT * FROM canvases')
+    .all() as Array<{
+    canvas_id: string;
+    group: string;
+    chat_jid: string;
+    title: string;
+    jsx: string;
+    state: string;
+    created_at: number;
+    updated_at: number;
+  }>;
+
+  for (const row of rows) {
+    cache.set(row.canvas_id, {
+      canvasId: row.canvas_id,
+      group: row.group,
+      chatJid: row.chat_jid,
+      title: row.title,
+      jsx: row.jsx,
+      state: JSON.parse(row.state),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    });
+  }
+}
+
+const upsertStmt = () =>
+  db.prepare(`
+  INSERT INTO canvases (canvas_id, "group", chat_jid, title, jsx, state, created_at, updated_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(canvas_id) DO UPDATE SET
+    "group" = excluded."group",
+    chat_jid = excluded.chat_jid,
+    title = excluded.title,
+    jsx = excluded.jsx,
+    state = excluded.state,
+    updated_at = excluded.updated_at
+`);
 
 export function createCanvas(
   canvasId: string,
@@ -28,6 +97,7 @@ export function createCanvas(
   jsx: string,
   state: Record<string, unknown>,
 ): CanvasSession {
+  const now = Date.now();
   const session: CanvasSession = {
     canvasId,
     group,
@@ -35,10 +105,22 @@ export function createCanvas(
     title,
     jsx,
     state,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
+    createdAt: now,
+    updatedAt: now,
   };
-  store.set(canvasId, session);
+
+  cache.set(canvasId, session);
+  upsertStmt().run(
+    canvasId,
+    group,
+    chatJid,
+    title,
+    jsx,
+    JSON.stringify(state),
+    now,
+    now,
+  );
+
   return session;
 }
 
@@ -47,41 +129,62 @@ export function updateCanvas(
   jsx?: string,
   state?: Record<string, unknown>,
 ): CanvasSession | null {
-  const session = store.get(canvasId);
+  const session = cache.get(canvasId);
   if (!session) return null;
 
   if (jsx !== undefined) session.jsx = jsx;
   if (state !== undefined) session.state = { ...session.state, ...state };
   session.updatedAt = Date.now();
 
+  cache.set(canvasId, session);
+  upsertStmt().run(
+    session.canvasId,
+    session.group,
+    session.chatJid,
+    session.title,
+    session.jsx,
+    JSON.stringify(session.state),
+    session.createdAt,
+    session.updatedAt,
+  );
+
   return session;
 }
 
 export function getCanvas(canvasId: string): CanvasSession | null {
-  return store.get(canvasId) ?? null;
+  return cache.get(canvasId) ?? null;
 }
 
 export function deleteCanvas(canvasId: string): boolean {
-  return store.delete(canvasId);
+  cache.delete(canvasId);
+  const result = db
+    .prepare('DELETE FROM canvases WHERE canvas_id = ?')
+    .run(canvasId);
+  return result.changes > 0;
 }
 
 export function listCanvases(group?: string): CanvasSession[] {
-  const all = Array.from(store.values());
+  const all = Array.from(cache.values());
   return group ? all.filter((s) => s.group === group) : all;
 }
 
 /**
  * Remove canvases that haven't been updated within the TTL.
- * Call periodically from the main loop.
  */
 export function cleanupExpiredCanvases(): string[] {
   const now = Date.now();
   const expired: string[] = [];
-  for (const [id, session] of store) {
+  for (const [id, session] of cache) {
     if (now - session.updatedAt > CANVAS_TTL_MS) {
-      store.delete(id);
+      cache.delete(id);
       expired.push(id);
     }
+  }
+  if (expired.length > 0) {
+    const placeholders = expired.map(() => '?').join(',');
+    db.prepare(
+      `DELETE FROM canvases WHERE canvas_id IN (${placeholders})`,
+    ).run(...expired);
   }
   return expired;
 }

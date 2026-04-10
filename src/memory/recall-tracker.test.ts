@@ -23,7 +23,11 @@ describe('RecallTracker', () => {
   describe('trackRecall', () => {
     it('creates recall store on first call', () => {
       trackRecall(groupDir, 'test query', [
-        { source: 'memory/context.md', content: 'some context about trading', score: 0.85 },
+        {
+          source: 'memory/context.md',
+          content: 'some context about trading',
+          score: 0.85,
+        },
       ]);
 
       const storePath = getRecallStorePath(groupDir);
@@ -88,7 +92,8 @@ describe('RecallTracker', () => {
       trackRecall(groupDir, 'test', [
         {
           source: 'test.md',
-          content: 'TRONN5 strategy uses Claude Sonnet for trading decisions with momentum analysis',
+          content:
+            'TRONN5 strategy uses Claude Sonnet for trading decisions with momentum analysis',
           score: 0.9,
         },
       ]);
@@ -97,7 +102,14 @@ describe('RecallTracker', () => {
       const entry = Object.values(store.entries)[0];
 
       expect(entry.conceptTags.length).toBeGreaterThan(0);
-      expect(entry.conceptTags.some(t => t.includes('tronn5') || t.includes('strategy') || t.includes('trading'))).toBe(true);
+      expect(
+        entry.conceptTags.some(
+          (t) =>
+            t.includes('tronn5') ||
+            t.includes('strategy') ||
+            t.includes('trading'),
+        ),
+      ).toBe(true);
     });
 
     it('limits snippet length to 280 chars', () => {
@@ -137,12 +149,20 @@ describe('RecallTracker', () => {
       // High recall candidate
       for (let i = 0; i < 10; i++) {
         trackRecall(groupDir, `query ${i}`, [
-          { source: 'hot.md', content: 'frequently recalled hot memory', score: 0.9 },
+          {
+            source: 'hot.md',
+            content: 'frequently recalled hot memory',
+            score: 0.9,
+          },
         ]);
       }
       // Low recall candidate
       trackRecall(groupDir, 'single query', [
-        { source: 'cold.md', content: 'rarely recalled cold memory', score: 0.3 },
+        {
+          source: 'cold.md',
+          content: 'rarely recalled cold memory',
+          score: 0.3,
+        },
       ]);
 
       const candidates = getTopRecallCandidates(groupDir, 10);
@@ -166,7 +186,11 @@ describe('RecallTracker', () => {
     it('respects limit parameter', () => {
       for (let i = 0; i < 10; i++) {
         trackRecall(groupDir, `query ${i}`, [
-          { source: `file${i}.md`, content: `unique content number ${i} with words`, score: 0.5 },
+          {
+            source: `file${i}.md`,
+            content: `unique content number ${i} with words`,
+            score: 0.5,
+          },
         ]);
       }
 
@@ -185,7 +209,10 @@ describe('RecallTracker', () => {
     it('handles corrupted JSON gracefully', () => {
       const dreamsDir = join(groupDir, '.dreams');
       require('fs').mkdirSync(dreamsDir, { recursive: true });
-      require('fs').writeFileSync(join(dreamsDir, 'short-term-recall.json'), 'not json');
+      require('fs').writeFileSync(
+        join(dreamsDir, 'short-term-recall.json'),
+        'not json',
+      );
 
       const store = loadRecallStore(groupDir);
       expect(store.version).toBe(1);

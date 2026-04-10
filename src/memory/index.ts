@@ -9,17 +9,29 @@
  * - Auto-setup for new groups
  */
 
-export { trackRecall, loadRecallStore, saveRecallStore, getTopRecallCandidates, getRecallStorePath } from './recall-tracker.js';
+export {
+  trackRecall,
+  loadRecallStore,
+  saveRecallStore,
+  getTopRecallCandidates,
+  getRecallStorePath,
+} from './recall-tracker.js';
 export type { RecallEntry, RecallStore } from './recall-tracker.js';
 
-export { scoreCandidate, rankCandidates, DEFAULT_WEIGHTS, DEFAULT_THRESHOLDS } from './promotion-scorer.js';
-export type { PromotionWeights, PromotionThresholds, ScoredCandidate } from './promotion-scorer.js';
+export {
+  scoreCandidate,
+  rankCandidates,
+  DEFAULT_WEIGHTS,
+  DEFAULT_THRESHOLDS,
+} from './promotion-scorer.js';
+export type {
+  PromotionWeights,
+  PromotionThresholds,
+  ScoredCandidate,
+} from './promotion-scorer.js';
 
 export { memorySearch, getQmdStatus } from './qmd-search.js';
 export type { SearchResult, SearchOptions } from './qmd-search.js';
-
-export { seedRecallStore, seedAllGroups } from './seed.js';
-export type { SeedResult } from './seed.js';
 
 export {
   lightSleep,
@@ -42,11 +54,7 @@ export {
   findPath,
   getGraphStats,
 } from './knowledge-graph.js';
-export type {
-  Entity,
-  Relation,
-  GraphQueryResult,
-} from './knowledge-graph.js';
+export type { Entity, Relation, GraphQueryResult } from './knowledge-graph.js';
 
 export {
   buildTopics,
@@ -55,13 +63,12 @@ export {
   loadHierarchy,
   clusterEntries,
 } from './hierarchy.js';
-export type {
-  TopicCluster,
-  MemoryLevel,
-  HierarchyStore,
-} from './hierarchy.js';
+export type { TopicCluster, MemoryLevel, HierarchyStore } from './hierarchy.js';
 
-export { spreadActivation, enhanceWithActivation } from './spreading-activation.js';
+export {
+  spreadActivation,
+  enhanceWithActivation,
+} from './spreading-activation.js';
 export type { ActivationResult } from './spreading-activation.js';
 
 export { dedup3Stage, dedupRecallEntries } from './dedup.js';

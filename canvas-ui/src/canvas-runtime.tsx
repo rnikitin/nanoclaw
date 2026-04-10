@@ -11,6 +11,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createRoot, Root } from 'react-dom/client';
 import { transform } from 'sucrase';
+import { theme } from './canvas-theme';
 
 // --- JSX Compiler ---
 
@@ -30,9 +31,10 @@ function compileJsx(code: string): Function | null {
       'useEffect',
       'useRef',
       'useCallback',
+      'theme',
       compiled.code + '\nreturn typeof App !== "undefined" ? App : null;',
     );
-    return fn(React, useState, useEffect, useRef, useCallback);
+    return fn(React, useState, useEffect, useRef, useCallback, theme);
   } catch (err) {
     console.error('JSX compilation error:', err);
     return null;
@@ -199,7 +201,7 @@ function CanvasApp({
 
   // Render agent's component with error boundary
   try {
-    return <Component state={state} send={send} />;
+    return <Component state={state} send={send} theme={theme} />;
   } catch (err: any) {
     return (
       <div style={{ color: '#e74c3c', padding: 20, fontFamily: 'monospace' }}>
