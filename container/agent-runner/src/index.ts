@@ -691,8 +691,9 @@ function activeRecall(userPrompt: string): string | null {
   const storePath = path.join(dreamsDir, 'short-term-recall.json');
 
   // Extract a short search query from the user's prompt (first 200 chars)
+  // Skip very short or generic prompts — not enough signal for meaningful recall
   const searchQuery = userPrompt.slice(0, 200).replace(/'/g, "'\\''");
-  if (searchQuery.trim().length < 5) return null;
+  if (searchQuery.trim().length < 10) return null;
 
   let qmdOutput: string;
   try {
@@ -781,7 +782,7 @@ function activeRecall(userPrompt: string): string | null {
 
   // Format results for prompt injection
   const contextLines = results
-    .filter(r => r.score >= 0.3)
+    .filter(r => r.score >= 0.5)
     .slice(0, 3)
     .map(r => `[${r.source}] ${r.content.slice(0, 300)}`);
 
