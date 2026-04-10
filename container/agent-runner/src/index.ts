@@ -445,6 +445,51 @@ function waitForIpcMessage(): Promise<string | null> {
  * allowing agent teams subagents to run to completion.
  * Also pipes IPC messages into the stream during the query.
  */
+
+const NOTION_TOKEN_PATH = '/workspace/group/memory/.notion-token';
+
+function buildMcpServers(
+  mcpServerPath: string,
+  containerInput: ContainerInput,
+): Record<string, { command: string; args: string[]; env?: Record<string, string> }> {
+  const servers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {
+    nanoclaw: {
+      command: 'node',
+      args: [mcpServerPath],
+      env: {
+        NANOCLAW_CHAT_JID: containerInput.chatJid,
+        NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+        NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+      },
+    },
+    memory: {
+      command: 'node',
+      args: [path.join(path.dirname(mcpServerPath), 'memory-mcp-stdio.js')],
+      env: {
+        NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+        NANOCLAW_GROUP_DIR: '/workspace/group',
+      },
+    },
+  };
+
+  // Add Notion MCP if token is configured
+  try {
+    if (fs.existsSync(NOTION_TOKEN_PATH)) {
+      const token = fs.readFileSync(NOTION_TOKEN_PATH, 'utf-8').trim();
+      if (token && token.startsWith('ntn_')) {
+        servers.notion = {
+          command: 'easy-notion-mcp',
+          args: [],
+          env: { NOTION_TOKEN: token },
+        };
+        log('Notion MCP enabled (token found)');
+      }
+    }
+  } catch { /* no notion */ }
+
+  return servers;
+}
+
 async function runQuery(
   prompt: string,
   sessionId: string | undefined,
@@ -549,31 +594,14 @@ async function runQuery(
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
         'mcp__nanoclaw__*',
-        'mcp__memory__*'
+        'mcp__memory__*',
+        'mcp__notion__*'
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
-      mcpServers: {
-        nanoclaw: {
-          command: 'node',
-          args: [mcpServerPath],
-          env: {
-            NANOCLAW_CHAT_JID: containerInput.chatJid,
-            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
-          },
-        },
-        memory: {
-          command: 'node',
-          args: [path.join(path.dirname(mcpServerPath), 'memory-mcp-stdio.js')],
-          env: {
-            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-            NANOCLAW_GROUP_DIR: '/workspace/group',
-          },
-        },
-      },
+      mcpServers: buildMcpServers(mcpServerPath, containerInput),
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
       },

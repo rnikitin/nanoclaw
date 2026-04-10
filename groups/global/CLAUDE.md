@@ -106,6 +106,17 @@ When you learn something important:
 - Split files larger than 500 lines into folders
 - Keep an index in your memory for the files you create
 
+## Notion Integration
+
+If a Notion token is configured, you have full access to Notion via MCP tools (search, read/create/update pages, query databases, comments).
+
+**Setup (one-time per group):**
+1. Ask the user for their Notion integration token (starts with `ntn_`)
+2. Save it: write the token to `/workspace/group/memory/.notion-token`
+3. Tell the user to restart the container — Notion tools will appear on next run
+
+The token file must contain only the token string, nothing else. The integration must have access to the relevant Notion pages (configured at https://www.notion.so/profile/integrations).
+
 ## Databases
 
 PostgreSQL and Redis are available to all agents:
