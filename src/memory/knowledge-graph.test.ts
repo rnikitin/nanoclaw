@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
+  _closeKnowledgeGraphHandles,
   buildGraph,
   queryEntity,
   listEntities,
@@ -35,6 +36,7 @@ describe('knowledge-graph', () => {
   });
 
   afterEach(() => {
+    _closeKnowledgeGraphHandles();
     rmSync(groupDir, { recursive: true, force: true });
   });
 

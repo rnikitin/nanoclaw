@@ -3,8 +3,12 @@ import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { buildGraph } from './knowledge-graph.js';
 import {
+  _closeKnowledgeGraphHandles,
+  buildGraph,
+} from './knowledge-graph.js';
+import {
+  _closeSpreadingActivationHandles,
   spreadActivation,
   enhanceWithActivation,
 } from './spreading-activation.js';
@@ -71,6 +75,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  _closeKnowledgeGraphHandles();
+  _closeSpreadingActivationHandles();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 

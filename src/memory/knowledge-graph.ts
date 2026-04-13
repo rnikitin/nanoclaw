@@ -53,7 +53,27 @@ function getDbPath(groupDir: string): string {
   return join(groupDir, '.dreams', 'knowledge-graph.db');
 }
 
+// Cached DB handles keyed by groupDir. Opening + WAL pragma + schema exec cost
+// ~1ms per call; the MCP server and dreaming engine hit these functions many
+// times per message, so we reuse handles for the process lifetime.
+const dbCache = new Map<string, Database.Database>();
+let exitHandlerRegistered = false;
+
+function closeAllHandles(): void {
+  for (const db of dbCache.values()) {
+    try {
+      db.close();
+    } catch {
+      /* ignore */
+    }
+  }
+  dbCache.clear();
+}
+
 function openDb(groupDir: string): Database.Database {
+  const cached = dbCache.get(groupDir);
+  if (cached) return cached;
+
   const dreamsDir = join(groupDir, '.dreams');
   if (!existsSync(dreamsDir))
     mkdirSync(dreamsDir, { recursive: true, mode: 0o777 });
@@ -89,7 +109,17 @@ function openDb(groupDir: string): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_rel_to ON relations(to_entity);
   `);
 
+  dbCache.set(groupDir, db);
+  if (!exitHandlerRegistered) {
+    process.on('exit', closeAllHandles);
+    exitHandlerRegistered = true;
+  }
   return db;
+}
+
+/** @internal — test-only helper to release cached handles. */
+export function _closeKnowledgeGraphHandles(): void {
+  closeAllHandles();
 }
 
 // ─── Entity Extraction ───────────────────────────────────────
@@ -241,69 +271,65 @@ export function buildGraph(groupDir: string): {
   const db = openDb(groupDir);
   const now = new Date().toISOString();
 
-  try {
-    const extracted = scanGroupFiles(groupDir);
+  const extracted = scanGroupFiles(groupDir);
 
-    // Group by source file for co-occurrence detection
-    const byFile = new Map<string, ExtractedEntity[]>();
-    for (const e of extracted) {
-      if (!byFile.has(e.source)) byFile.set(e.source, []);
-      byFile.get(e.source)!.push(e);
-    }
+  // Group by source file for co-occurrence detection
+  const byFile = new Map<string, ExtractedEntity[]>();
+  for (const e of extracted) {
+    if (!byFile.has(e.source)) byFile.set(e.source, []);
+    byFile.get(e.source)!.push(e);
+  }
 
-    const upsertEntity = db.prepare(`
-      INSERT INTO entities (type, name, importance, first_seen, last_seen, mention_count)
-      VALUES (?, ?, 0.5, ?, ?, 1)
-      ON CONFLICT(name) DO UPDATE SET
-        last_seen = ?,
-        mention_count = mention_count + 1,
-        type = CASE WHEN excluded.type != 'concept' THEN excluded.type ELSE entities.type END
-    `);
+  const upsertEntity = db.prepare(`
+    INSERT INTO entities (type, name, importance, first_seen, last_seen, mention_count)
+    VALUES (?, ?, 0.5, ?, ?, 1)
+    ON CONFLICT(name) DO UPDATE SET
+      last_seen = ?,
+      mention_count = mention_count + 1,
+      type = CASE WHEN excluded.type != 'concept' THEN excluded.type ELSE entities.type END
+  `);
 
-    const upsertRelation = db.prepare(`
-      INSERT OR IGNORE INTO relations (from_entity, to_entity, relation_type, evidence, source_file, created_at)
-      VALUES (?, ?, 'co_occurrence', ?, ?, ?)
-    `);
+  const upsertRelation = db.prepare(`
+    INSERT OR IGNORE INTO relations (from_entity, to_entity, relation_type, evidence, source_file, created_at)
+    VALUES (?, ?, 'co_occurrence', ?, ?, ?)
+  `);
 
-    let entityCount = 0;
-    let relationCount = 0;
+  let entityCount = 0;
+  let relationCount = 0;
 
-    const transaction = db.transaction(() => {
-      for (const [source, fileEntities] of byFile) {
-        // Upsert each entity
-        for (const e of fileEntities) {
-          upsertEntity.run(e.type, e.name, now, now, now);
-          entityCount++;
-        }
+  const transaction = db.transaction(() => {
+    for (const [source, fileEntities] of byFile) {
+      // Upsert each entity
+      for (const e of fileEntities) {
+        upsertEntity.run(e.type, e.name, now, now, now);
+        entityCount++;
+      }
 
-        // Create co-occurrence relations between entities in same file
-        const names = [...new Set(fileEntities.map((e) => e.name))];
-        for (let i = 0; i < names.length; i++) {
-          for (let j = i + 1; j < names.length; j++) {
-            // Alphabetical ordering to avoid duplicates
-            const [a, b] = [names[i], names[j]].sort();
-            upsertRelation.run(a, b, `Co-mentioned in ${source}`, source, now);
-            relationCount++;
-          }
+      // Create co-occurrence relations between entities in same file
+      const names = [...new Set(fileEntities.map((e) => e.name))];
+      for (let i = 0; i < names.length; i++) {
+        for (let j = i + 1; j < names.length; j++) {
+          // Alphabetical ordering to avoid duplicates
+          const [a, b] = [names[i], names[j]].sort();
+          upsertRelation.run(a, b, `Co-mentioned in ${source}`, source, now);
+          relationCount++;
         }
       }
-    });
+    }
+  });
 
-    transaction();
+  transaction();
 
-    logger.info(
-      {
-        group: basename(groupDir),
-        entities: entityCount,
-        relations: relationCount,
-      },
-      'Knowledge graph rebuilt',
-    );
+  logger.info(
+    {
+      group: basename(groupDir),
+      entities: entityCount,
+      relations: relationCount,
+    },
+    'Knowledge graph rebuilt',
+  );
 
-    return { entities: entityCount, relations: relationCount };
-  } finally {
-    db.close();
-  }
+  return { entities: entityCount, relations: relationCount };
 }
 
 /**
@@ -314,84 +340,80 @@ export function queryEntity(
   entityName: string,
 ): GraphQueryResult | null {
   const db = openDb(groupDir);
-  try {
-    const entity = db
-      .prepare('SELECT * FROM entities WHERE name = ? COLLATE NOCASE')
-      .get(entityName) as Entity | undefined;
+  const entity = db
+    .prepare('SELECT * FROM entities WHERE name = ? COLLATE NOCASE')
+    .get(entityName) as Entity | undefined;
 
-    if (!entity) return null;
+  if (!entity) return null;
 
-    const outgoing = db
-      .prepare(
-        `
-        SELECT r.*, e.type, e.name as entity_name, e.importance, e.mention_count
-        FROM relations r
-        JOIN entities e ON e.name = r.to_entity
-        WHERE r.from_entity = ? COLLATE NOCASE
-      `,
-      )
-      .all(entityName) as Array<
-      Relation & {
-        type: string;
-        entity_name: string;
-        importance: number;
-        mention_count: number;
-      }
-    >;
+  const outgoing = db
+    .prepare(
+      `
+      SELECT r.*, e.type, e.name as entity_name, e.importance, e.mention_count
+      FROM relations r
+      JOIN entities e ON e.name = r.to_entity
+      WHERE r.from_entity = ? COLLATE NOCASE
+    `,
+    )
+    .all(entityName) as Array<
+    Relation & {
+      type: string;
+      entity_name: string;
+      importance: number;
+      mention_count: number;
+    }
+  >;
 
-    const incoming = db
-      .prepare(
-        `
-        SELECT r.*, e.type, e.name as entity_name, e.importance, e.mention_count
-        FROM relations r
-        JOIN entities e ON e.name = r.from_entity
-        WHERE r.to_entity = ? COLLATE NOCASE
-      `,
-      )
-      .all(entityName) as Array<
-      Relation & {
-        type: string;
-        entity_name: string;
-        importance: number;
-        mention_count: number;
-      }
-    >;
+  const incoming = db
+    .prepare(
+      `
+      SELECT r.*, e.type, e.name as entity_name, e.importance, e.mention_count
+      FROM relations r
+      JOIN entities e ON e.name = r.from_entity
+      WHERE r.to_entity = ? COLLATE NOCASE
+    `,
+    )
+    .all(entityName) as Array<
+    Relation & {
+      type: string;
+      entity_name: string;
+      importance: number;
+      mention_count: number;
+    }
+  >;
 
-    const relations = [
-      ...outgoing.map((r) => ({
-        related_entity: {
-          id: 0,
-          type: r.type,
-          name: r.entity_name,
-          importance: r.importance,
-          first_seen: '',
-          last_seen: '',
-          mention_count: r.mention_count,
-        } as Entity,
-        relation_type: r.relation_type,
-        direction: 'outgoing' as const,
-        evidence: r.evidence || '',
-      })),
-      ...incoming.map((r) => ({
-        related_entity: {
-          id: 0,
-          type: r.type,
-          name: r.entity_name,
-          importance: r.importance,
-          first_seen: '',
-          last_seen: '',
-          mention_count: r.mention_count,
-        } as Entity,
-        relation_type: r.relation_type,
-        direction: 'incoming' as const,
-        evidence: r.evidence || '',
-      })),
-    ];
+  const relations = [
+    ...outgoing.map((r) => ({
+      related_entity: {
+        id: 0,
+        type: r.type,
+        name: r.entity_name,
+        importance: r.importance,
+        first_seen: '',
+        last_seen: '',
+        mention_count: r.mention_count,
+      } as Entity,
+      relation_type: r.relation_type,
+      direction: 'outgoing' as const,
+      evidence: r.evidence || '',
+    })),
+    ...incoming.map((r) => ({
+      related_entity: {
+        id: 0,
+        type: r.type,
+        name: r.entity_name,
+        importance: r.importance,
+        first_seen: '',
+        last_seen: '',
+        mention_count: r.mention_count,
+      } as Entity,
+      relation_type: r.relation_type,
+      direction: 'incoming' as const,
+      evidence: r.evidence || '',
+    })),
+  ];
 
-    return { entity, relations };
-  } finally {
-    db.close();
-  }
+  return { entity, relations };
 }
 
 /**
@@ -399,20 +421,16 @@ export function queryEntity(
  */
 export function listEntities(groupDir: string, type?: string): Entity[] {
   const db = openDb(groupDir);
-  try {
-    if (type) {
-      return db
-        .prepare(
-          'SELECT * FROM entities WHERE type = ? ORDER BY mention_count DESC',
-        )
-        .all(type) as Entity[];
-    }
+  if (type) {
     return db
-      .prepare('SELECT * FROM entities ORDER BY mention_count DESC')
-      .all() as Entity[];
-  } finally {
-    db.close();
+      .prepare(
+        'SELECT * FROM entities WHERE type = ? ORDER BY mention_count DESC',
+      )
+      .all(type) as Entity[];
   }
+  return db
+    .prepare('SELECT * FROM entities ORDER BY mention_count DESC')
+    .all() as Entity[];
 }
 
 /**
@@ -425,45 +443,41 @@ export function findPath(
   maxDepth = 3,
 ): string[][] {
   const db = openDb(groupDir);
-  try {
-    const paths: string[][] = [];
-    const visited = new Set<string>();
+  const paths: string[][] = [];
+  const visited = new Set<string>();
 
-    function dfs(
-      current: string,
-      target: string,
-      path: string[],
-      depth: number,
-    ): void {
-      if (depth > maxDepth) return;
-      if (current.toLowerCase() === target.toLowerCase()) {
-        paths.push([...path]);
-        return;
-      }
-      if (visited.has(current.toLowerCase())) return;
-      visited.add(current.toLowerCase());
-
-      const neighbors = db
-        .prepare(
-          `
-          SELECT to_entity as neighbor FROM relations WHERE from_entity = ? COLLATE NOCASE
-          UNION
-          SELECT from_entity as neighbor FROM relations WHERE to_entity = ? COLLATE NOCASE
-        `,
-        )
-        .all(current, current) as Array<{ neighbor: string }>;
-
-      for (const { neighbor } of neighbors) {
-        dfs(neighbor, target, [...path, neighbor], depth + 1);
-      }
-      visited.delete(current.toLowerCase());
+  function dfs(
+    current: string,
+    target: string,
+    path: string[],
+    depth: number,
+  ): void {
+    if (depth > maxDepth) return;
+    if (current.toLowerCase() === target.toLowerCase()) {
+      paths.push([...path]);
+      return;
     }
+    if (visited.has(current.toLowerCase())) return;
+    visited.add(current.toLowerCase());
 
-    dfs(fromName, toName, [fromName], 0);
-    return paths;
-  } finally {
-    db.close();
+    const neighbors = db
+      .prepare(
+        `
+        SELECT to_entity as neighbor FROM relations WHERE from_entity = ? COLLATE NOCASE
+        UNION
+        SELECT from_entity as neighbor FROM relations WHERE to_entity = ? COLLATE NOCASE
+      `,
+      )
+      .all(current, current) as Array<{ neighbor: string }>;
+
+    for (const { neighbor } of neighbors) {
+      dfs(neighbor, target, [...path, neighbor], depth + 1);
+    }
+    visited.delete(current.toLowerCase());
   }
+
+  dfs(fromName, toName, [fromName], 0);
+  return paths;
 }
 
 /**
@@ -479,20 +493,16 @@ export function getGraphStats(groupDir: string): {
     return { entities: 0, relations: 0, byType: {} };
   }
   const db = openDb(groupDir);
-  try {
-    const entities = (
-      db.prepare('SELECT COUNT(*) as c FROM entities').get() as { c: number }
-    ).c;
-    const relations = (
-      db.prepare('SELECT COUNT(*) as c FROM relations').get() as { c: number }
-    ).c;
-    const types = db
-      .prepare('SELECT type, COUNT(*) as c FROM entities GROUP BY type')
-      .all() as Array<{ type: string; c: number }>;
-    const byType: Record<string, number> = {};
-    for (const t of types) byType[t.type] = t.c;
-    return { entities, relations, byType };
-  } finally {
-    db.close();
-  }
+  const entities = (
+    db.prepare('SELECT COUNT(*) as c FROM entities').get() as { c: number }
+  ).c;
+  const relations = (
+    db.prepare('SELECT COUNT(*) as c FROM relations').get() as { c: number }
+  ).c;
+  const types = db
+    .prepare('SELECT type, COUNT(*) as c FROM entities GROUP BY type')
+    .all() as Array<{ type: string; c: number }>;
+  const byType: Record<string, number> = {};
+  for (const t of types) byType[t.type] = t.c;
+  return { entities, relations, byType };
 }

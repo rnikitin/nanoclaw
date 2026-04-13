@@ -165,13 +165,36 @@ function parseQmdResults(output: string): Array<{ source: string; content: strin
 
 // ─── Knowledge Graph ────────────────────────────────────────
 
+// Process-wide cached handle. A single MCP server instance is bound to a
+// fixed GROUP_DIR, so the knowledge-graph DB only needs to be opened once
+// and reused across tool calls.
+let graphDb: Database.Database | null = null;
+let graphDbMissing = false;
+let graphExitHandlerRegistered = false;
+
 function getGraphDb(): Database.Database | null {
+  if (graphDb) return graphDb;
+  if (graphDbMissing) return null;
+
   const dbPath = join(GROUP_DIR, '.dreams', 'knowledge-graph.db');
-  if (!existsSync(dbPath)) return null;
+  if (!existsSync(dbPath)) {
+    graphDbMissing = true;
+    return null;
+  }
   try {
-    const db = new Database(dbPath, { readonly: true });
-    db.pragma('journal_mode = WAL');
-    return db;
+    graphDb = new Database(dbPath, { readonly: true });
+    graphDb.pragma('journal_mode = WAL');
+    if (!graphExitHandlerRegistered) {
+      process.on('exit', () => {
+        try {
+          graphDb?.close();
+        } catch {
+          /* ignore */
+        }
+      });
+      graphExitHandlerRegistered = true;
+    }
+    return graphDb;
   } catch {
     return null;
   }
@@ -267,10 +290,8 @@ function spreadActivation(
       if (row) result.push(row);
     }
 
-    db.close();
     return result;
   } catch {
-    try { db.close(); } catch { /* ignore */ }
     return [];
   }
 }
@@ -293,7 +314,6 @@ function queryGraphEntity(entityName: string): string {
         "SELECT * FROM entities WHERE name LIKE ? COLLATE NOCASE ORDER BY mention_count DESC LIMIT 5"
       ).all(`%${entityName}%`) as Array<{ name: string; type: string; mention_count: number }>;
 
-      db.close();
       if (fuzzy.length === 0) return `Entity "${entityName}" not found in knowledge graph.`;
       return `Entity "${entityName}" not found. Similar: ${fuzzy.map(e => `${e.name} (${e.type}, ${e.mention_count} mentions)`).join(', ')}`;
     }
@@ -310,8 +330,6 @@ function queryGraphEntity(entityName: string): string {
       FROM relations r WHERE r.to_entity = ? COLLATE NOCASE
       ORDER BY r.created_at DESC LIMIT 20
     `).all(entityName) as Array<{ from_entity: string; relation_type: string; source_file: string; evidence: string }>;
-
-    db.close();
 
     const lines: string[] = [
       `Entity: ${entity.name} (${entity.type})`,
@@ -331,7 +349,6 @@ function queryGraphEntity(entityName: string): string {
 
     return lines.join('\n');
   } catch (err: any) {
-    try { db.close(); } catch { /* ignore */ }
     return `Graph query error: ${err.message}`;
   }
 }
@@ -340,9 +357,9 @@ function queryGraphEntity(entityName: string): string {
  * Find path between two entities in the knowledge graph.
  */
 function findGraphPath(from: string, to: string, maxDepth = 3): string {
-  const maybeDb = getGraphDb();
-  if (!maybeDb) return 'Knowledge graph not available.';
-  const db = maybeDb;
+  const handle = getGraphDb();
+  if (!handle) return 'Knowledge graph not available.';
+  const db: Database.Database = handle;
 
   try {
     const paths: string[][] = [];
@@ -371,13 +388,11 @@ function findGraphPath(from: string, to: string, maxDepth = 3): string {
     }
 
     dfs(from, to, [from], 0);
-    db.close();
 
     if (paths.length === 0) return `No path found between "${from}" and "${to}" (max depth: ${maxDepth}).`;
     return `Paths between "${from}" and "${to}":\n` +
       paths.map((p, i) => `  ${i + 1}. ${p.join(' → ')}`).join('\n');
   } catch (err: any) {
-    try { db.close(); } catch { /* ignore */ }
     return `Graph path error: ${err.message}`;
   }
 }

@@ -14,7 +14,45 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import Database from 'better-sqlite3';
 
-import { logger } from '../logger.js';
+// ─── Cache ───────────────────────────────────────────────────
+
+// Read-only DB handles cached per groupDir. Called on every memory_search —
+// avoid re-opening the graph DB for each query.
+const dbCache = new Map<string, Database.Database>();
+let exitHandlerRegistered = false;
+
+function getReadonlyDb(dbPath: string, groupDir: string): Database.Database {
+  const cached = dbCache.get(groupDir);
+  if (cached) return cached;
+  const db = new Database(dbPath, { readonly: true });
+  dbCache.set(groupDir, db);
+  if (!exitHandlerRegistered) {
+    process.on('exit', () => {
+      for (const h of dbCache.values()) {
+        try {
+          h.close();
+        } catch {
+          /* ignore */
+        }
+      }
+      dbCache.clear();
+    });
+    exitHandlerRegistered = true;
+  }
+  return db;
+}
+
+/** @internal — test-only helper to release cached read-only handles. */
+export function _closeSpreadingActivationHandles(): void {
+  for (const h of dbCache.values()) {
+    try {
+      h.close();
+    } catch {
+      /* ignore */
+    }
+  }
+  dbCache.clear();
+}
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -45,60 +83,56 @@ export function spreadActivation(
   const dbPath = join(groupDir, '.dreams', 'knowledge-graph.db');
   if (!existsSync(dbPath)) return [];
 
-  const db = new Database(dbPath, { readonly: true });
+  const db = getReadonlyDb(dbPath, groupDir);
 
-  try {
-    const activations = new Map<string, { activation: number; hops: number }>();
+  const activations = new Map<string, { activation: number; hops: number }>();
 
-    // Seed entities get full activation
-    for (const seed of seeds) {
-      activations.set(seed.toLowerCase(), { activation: 1.0, hops: 0 });
-    }
+  // Seed entities get full activation
+  for (const seed of seeds) {
+    activations.set(seed.toLowerCase(), { activation: 1.0, hops: 0 });
+  }
 
-    // BFS spreading
-    let frontier = seeds.map((s) => s.toLowerCase());
+  // BFS spreading
+  let frontier = seeds.map((s) => s.toLowerCase());
 
-    for (let hop = 1; hop <= maxHops; hop++) {
-      const nextFrontier: string[] = [];
-      const currentDecay = Math.pow(decayFactor, hop);
+  for (let hop = 1; hop <= maxHops; hop++) {
+    const nextFrontier: string[] = [];
+    const currentDecay = Math.pow(decayFactor, hop);
 
-      for (const current of frontier) {
-        // Get all neighbors
-        const neighbors = db
-          .prepare(
-            `
-            SELECT to_entity as neighbor FROM relations WHERE LOWER(from_entity) = ?
-            UNION
-            SELECT from_entity as neighbor FROM relations WHERE LOWER(to_entity) = ?
-          `,
-          )
-          .all(current, current) as Array<{ neighbor: string }>;
+    for (const current of frontier) {
+      // Get all neighbors
+      const neighbors = db
+        .prepare(
+          `
+          SELECT to_entity as neighbor FROM relations WHERE LOWER(from_entity) = ?
+          UNION
+          SELECT from_entity as neighbor FROM relations WHERE LOWER(to_entity) = ?
+        `,
+        )
+        .all(current, current) as Array<{ neighbor: string }>;
 
-        for (const { neighbor } of neighbors) {
-          const key = neighbor.toLowerCase();
-          const existing = activations.get(key);
-          const newActivation = currentDecay;
+      for (const { neighbor } of neighbors) {
+        const key = neighbor.toLowerCase();
+        const existing = activations.get(key);
+        const newActivation = currentDecay;
 
-          if (!existing || existing.activation < newActivation) {
-            activations.set(key, { activation: newActivation, hops: hop });
-            if (newActivation >= minActivation) {
-              nextFrontier.push(key);
-            }
+        if (!existing || existing.activation < newActivation) {
+          activations.set(key, { activation: newActivation, hops: hop });
+          if (newActivation >= minActivation) {
+            nextFrontier.push(key);
           }
         }
       }
-
-      frontier = nextFrontier;
-      if (frontier.length === 0) break;
     }
 
-    return [...activations.entries()]
-      .map(([entity, { activation, hops }]) => ({ entity, activation, hops }))
-      .filter((r) => r.activation >= minActivation)
-      .sort((a, b) => b.activation - a.activation);
-  } finally {
-    db.close();
+    frontier = nextFrontier;
+    if (frontier.length === 0) break;
   }
+
+  return [...activations.entries()]
+    .map(([entity, { activation, hops }]) => ({ entity, activation, hops }))
+    .filter((r) => r.activation >= minActivation)
+    .sort((a, b) => b.activation - a.activation);
 }
 
 /**
