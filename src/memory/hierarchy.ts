@@ -21,6 +21,7 @@ import { join, basename } from 'path';
 import { ensureDir } from '../fs-utils.js';
 import { logger } from '../logger.js';
 import type { RecallEntry } from './recall-tracker.js';
+import { jaccard } from './similarity.js';
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -77,16 +78,8 @@ export function saveHierarchy(groupDir: string, store: HierarchyStore): void {
 
 // ─── Clustering ──────────────────────────────────────────────
 
-/** Compute Jaccard similarity between two tag sets. */
 function tagSimilarity(a: string[], b: string[]): number {
-  if (a.length === 0 || b.length === 0) return 0;
-  const setA = new Set(a);
-  const setB = new Set(b);
-  let intersection = 0;
-  for (const t of setA) {
-    if (setB.has(t)) intersection++;
-  }
-  return intersection / (setA.size + setB.size - intersection);
+  return jaccard(new Set(a), new Set(b));
 }
 
 /**

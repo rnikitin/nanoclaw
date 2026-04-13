@@ -22,6 +22,7 @@ import { logger } from '../logger.js';
 import { CREDENTIAL_PROXY_PORT } from '../config.js';
 import { PROXY_BIND_HOST } from '../container-runtime.js';
 import { ensureDir } from '../fs-utils.js';
+import { jaccard, tokenizeWords } from './similarity.js';
 import {
   loadRecallStore,
   saveRecallStore,
@@ -106,25 +107,7 @@ function readDailyNotes(groupDir: string, lookbackDays = 2): string[] {
 // ─── Deduplication ────────────────────────────────────────────
 
 function similarity(a: string, b: string): number {
-  // Simple Jaccard similarity on word sets
-  const wordsA = new Set(
-    a
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((w) => w.length > 3),
-  );
-  const wordsB = new Set(
-    b
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((w) => w.length > 3),
-  );
-  if (wordsA.size === 0 || wordsB.size === 0) return 0;
-  let intersection = 0;
-  for (const w of wordsA) {
-    if (wordsB.has(w)) intersection++;
-  }
-  return intersection / (wordsA.size + wordsB.size - intersection);
+  return jaccard(new Set(tokenizeWords(a)), new Set(tokenizeWords(b)));
 }
 
 function deduplicateCandidates(

@@ -8,6 +8,8 @@
  * Replaces the simple Jaccard-only dedup in dreaming.ts.
  */
 
+import { jaccard } from './similarity.js';
+
 // ─── Stage 1: SimHash ───────────────────────────────────────
 
 /** Generate a 32-bit SimHash fingerprint for text. */
@@ -79,15 +81,6 @@ function shingles(text: string, n = 3): Set<string> {
   return result;
 }
 
-/** Jaccard similarity on shingle sets. */
-function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 || b.size === 0) return 0;
-  let intersection = 0;
-  for (const s of a) {
-    if (b.has(s)) intersection++;
-  }
-  return intersection / (a.size + b.size - intersection);
-}
 
 // ─── Three-Stage Pipeline ────────────────────────────────────
 
@@ -151,7 +144,7 @@ export function dedup3Stage(
 
     // Stage 2: Jaccard on shingles — catches rephrasings
     for (let j = 0; j < acceptedShingles.length; j++) {
-      if (jaccardSimilarity(sh, acceptedShingles[j]) >= jaccardThreshold) {
+      if (jaccard(sh, acceptedShingles[j]) >= jaccardThreshold) {
         duplicates.push({ entry, duplicateOf: acceptedIds[j], stage: 2 });
         isDuplicate = true;
         break;
