@@ -8,14 +8,14 @@ import type { NewMessage } from './types.js';
 import type { SessionCommandDeps } from './session-commands.js';
 
 describe('extractSessionCommand', () => {
-  const trigger = /^@Andy\b/i;
+  const trigger = /^@Ark\b/i;
 
   it('detects bare /compact', () => {
     expect(extractSessionCommand('/compact', trigger)).toBe('/compact');
   });
 
   it('detects /compact with trigger prefix', () => {
-    expect(extractSessionCommand('@Andy /compact', trigger)).toBe('/compact');
+    expect(extractSessionCommand('@Ark /compact', trigger)).toBe('/compact');
   });
 
   it('rejects /compact with extra text', () => {
@@ -45,7 +45,7 @@ describe('extractSessionCommand', () => {
   });
 
   it('detects /restart with trigger prefix', () => {
-    expect(extractSessionCommand('@Andy /restart', trigger)).toBe('/restart');
+    expect(extractSessionCommand('@Ark /restart', trigger)).toBe('/restart');
   });
 
   it('detects /thinking', () => {
@@ -53,7 +53,7 @@ describe('extractSessionCommand', () => {
   });
 
   it('detects /thinking with trigger prefix', () => {
-    expect(extractSessionCommand('@Andy /thinking', trigger)).toBe('/thinking');
+    expect(extractSessionCommand('@Ark /thinking', trigger)).toBe('/thinking');
   });
 
   it('detects /new', () => {
@@ -61,7 +61,7 @@ describe('extractSessionCommand', () => {
   });
 
   it('detects /new with trigger prefix', () => {
-    expect(extractSessionCommand('@Andy /new', trigger)).toBe('/new');
+    expect(extractSessionCommand('@Ark /new', trigger)).toBe('/new');
   });
 
   it('detects /auto-update', () => {
@@ -69,7 +69,7 @@ describe('extractSessionCommand', () => {
   });
 
   it('detects /auto-update with trigger prefix', () => {
-    expect(extractSessionCommand('@Andy /auto-update', trigger)).toBe(
+    expect(extractSessionCommand('@Ark /auto-update', trigger)).toBe(
       '/auto-update',
     );
   });
@@ -80,7 +80,7 @@ describe('extractSessionCommand', () => {
     expect(extractSessionCommand('/restart@some_bot', trigger)).toBe(
       '/restart',
     );
-    expect(extractSessionCommand('@Andy /thinking@mybot', trigger)).toBe(
+    expect(extractSessionCommand('@Ark /thinking@mybot', trigger)).toBe(
       '/thinking',
     );
   });
@@ -143,7 +143,7 @@ function makeDeps(
   };
 }
 
-const trigger = /^@Andy\b/i;
+const trigger = /^@Ark\b/i;
 
 describe('handleSessionCommand', () => {
   it('returns handled:false when no session command found', async () => {

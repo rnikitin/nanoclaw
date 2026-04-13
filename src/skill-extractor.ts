@@ -187,9 +187,9 @@ function getLatestTranscript(groupFolder: string): string | null {
  * Count approximate turns in a transcript.
  */
 function countTurns(transcript: string): number {
-  // Count **User**: and **Арк**: markers
+  // Count **User**: and **Ark**: markers
   const userTurns = (transcript.match(/\*\*User\*\*:/g) || []).length;
-  const assistantTurns = (transcript.match(/\*\*Арк\*\*:/g) || []).length;
+  const assistantTurns = (transcript.match(/\*\*Ark\*\*:/g) || []).length;
   // Also try other assistant name patterns
   const otherAssistant = (transcript.match(/\*\*[^*]+\*\*:/g) || []).length;
   return Math.max(userTurns, assistantTurns, Math.floor(otherAssistant / 2));

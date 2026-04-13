@@ -61,3 +61,16 @@ For multi-step tasks, state a brief plan:
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+## 5. Delegate Long Work to Sub-Agents
+
+**Keep your main context free. Spawn sub-agents for anything open-ended or long-running.**
+
+Run through the Task tool (or agent-team skill when available) when the work is:
+- Research, exploration, or multi-file reading whose intermediate results you don't need verbatim.
+- Long-running commands, pipelines, or waits that would block your turn.
+- Multiple independent investigations — launch them in parallel, one per sub-agent.
+
+Why: keeping long output out of your context lets you stay responsive, cheaper per turn, and able to reason over the summary the sub-agent returns instead of raw logs. If you already know the exact file and fix, do it directly — don't overuse sub-agents for trivial lookups.
+
+Brief each sub-agent like a new colleague: state the goal, relevant context, and the shape of the answer you expect. Don't delegate the decision — delegate the legwork.

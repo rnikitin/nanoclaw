@@ -10,8 +10,8 @@ vi.mock('../env.js', () => ({ readEnvFile: vi.fn(() => ({})) }));
 
 // Mock config
 vi.mock('../config.js', () => ({
-  ASSISTANT_NAME: 'Andy',
-  TRIGGER_PATTERN: /^@Andy\b/i,
+  ASSISTANT_NAME: 'Ark',
+  TRIGGER_PATTERN: /^@Ark\b/i,
 }));
 
 // Mock logger
@@ -93,7 +93,7 @@ vi.mock('grammy', () => ({
     }
 
     start(opts: { onStart: (botInfo: any) => void }) {
-      opts.onStart({ username: 'andy_ai_bot', id: 12345 });
+      opts.onStart({ username: 'ark_ai_bot', id: 12345 });
     }
 
     stop() {}
@@ -114,7 +114,7 @@ function createTestOpts(
       'tg:100200300': {
         name: 'Test Group',
         folder: 'test-group',
-        trigger: '@Andy',
+        trigger: '@Ark',
         added_at: '2024-01-01T00:00:00.000Z',
       },
     })),
@@ -153,7 +153,7 @@ function createTextCtx(overrides: {
       message_id: overrides.messageId ?? 1,
       entities: overrides.entities ?? [],
     },
-    me: { username: 'andy_ai_bot' },
+    me: { username: 'ark_ai_bot' },
     reply: vi.fn(),
   };
 }
@@ -188,7 +188,7 @@ function createMediaCtx(overrides: {
       caption: overrides.caption,
       ...(overrides.extra || {}),
     },
-    me: { username: 'andy_ai_bot' },
+    me: { username: 'ark_ai_bot' },
     getFile: overrides.getFile ?? vi.fn(),
     api: {
       getFile:
@@ -397,7 +397,7 @@ describe('TelegramChannel', () => {
           'tg:100200300': {
             name: 'Private',
             folder: 'private',
-            trigger: '@Andy',
+            trigger: '@Ark',
             added_at: '2024-01-01T00:00:00.000Z',
           },
         })),
@@ -469,15 +469,15 @@ describe('TelegramChannel', () => {
       await channel.connect();
 
       const ctx = createTextCtx({
-        text: '@andy_ai_bot what time is it?',
-        entities: [{ type: 'mention', offset: 0, length: 12 }],
+        text: '@ark_ai_bot what time is it?',
+        entities: [{ type: 'mention', offset: 0, length: 11 }],
       });
       await triggerTextMessage(ctx);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          content: '@Andy @andy_ai_bot what time is it?',
+          content: '@Ark @ark_ai_bot what time is it?',
         }),
       );
     });
@@ -488,16 +488,16 @@ describe('TelegramChannel', () => {
       await channel.connect();
 
       const ctx = createTextCtx({
-        text: '@Andy @andy_ai_bot hello',
-        entities: [{ type: 'mention', offset: 6, length: 12 }],
+        text: '@Ark @ark_ai_bot hello',
+        entities: [{ type: 'mention', offset: 6, length: 11 }],
       });
       await triggerTextMessage(ctx);
 
-      // Should NOT double-prepend — already starts with @Andy
+      // Should NOT double-prepend — already starts with @Ark
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          content: '@Andy @andy_ai_bot hello',
+          content: '@Ark @ark_ai_bot hello',
         }),
       );
     });
@@ -527,8 +527,8 @@ describe('TelegramChannel', () => {
       await channel.connect();
 
       const ctx = createTextCtx({
-        text: 'hey @andy_ai_bot check this',
-        entities: [{ type: 'mention', offset: 4, length: 12 }],
+        text: 'hey @ark_ai_bot check this',
+        entities: [{ type: 'mention', offset: 4, length: 11 }],
       });
       await triggerTextMessage(ctx);
 
@@ -536,7 +536,7 @@ describe('TelegramChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          content: '@Andy hey @andy_ai_bot check this',
+          content: '@Ark hey @ark_ai_bot check this',
         }),
       );
     });
@@ -655,7 +655,7 @@ describe('TelegramChannel', () => {
 
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
-        expect.objectContaining({ content: '[Video]' }),
+        expect.objectContaining({ content: '[Video: video_1.mp4]' }),
       );
     });
 
@@ -957,7 +957,7 @@ describe('TelegramChannel', () => {
         'tg:100200300',
         expect.objectContaining({
           content:
-            '[PDF: report.pdf → /workspace/group/attachments/report.pdf]',
+            '[File: report.pdf → /workspace/group/attachments/report.pdf]',
         }),
       );
 
@@ -988,7 +988,7 @@ describe('TelegramChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          content: '[PDF: notes.PDF → /workspace/group/attachments/notes.PDF]',
+          content: '[File: notes.PDF → /workspace/group/attachments/notes.PDF]',
         }),
       );
 
@@ -1103,7 +1103,7 @@ describe('TelegramChannel', () => {
       expect(currentBot().api.sendMessage).toHaveBeenCalledWith(
         '100200300',
         'Hello',
-        { parse_mode: 'Markdown' },
+        { parse_mode: 'MarkdownV2' },
       );
     });
 
@@ -1117,7 +1117,7 @@ describe('TelegramChannel', () => {
       expect(currentBot().api.sendMessage).toHaveBeenCalledWith(
         '-1001234567890',
         'Group message',
-        { parse_mode: 'Markdown' },
+        { parse_mode: 'MarkdownV2' },
       );
     });
 
@@ -1134,13 +1134,13 @@ describe('TelegramChannel', () => {
         1,
         '100200300',
         'x'.repeat(4096),
-        { parse_mode: 'Markdown' },
+        { parse_mode: 'MarkdownV2' },
       );
       expect(currentBot().api.sendMessage).toHaveBeenNthCalledWith(
         2,
         '100200300',
         'x'.repeat(904),
-        { parse_mode: 'Markdown' },
+        { parse_mode: 'MarkdownV2' },
       );
     });
 
@@ -1280,7 +1280,7 @@ describe('TelegramChannel', () => {
 
       expect(ctx.reply).toHaveBeenCalledWith(
         expect.stringContaining('tg:100200300'),
-        expect.objectContaining({ parse_mode: 'Markdown' }),
+        expect.objectContaining({ parse_mode: 'MarkdownV2' }),
       );
     });
 
@@ -1314,7 +1314,7 @@ describe('TelegramChannel', () => {
 
       await handler(ctx);
 
-      expect(ctx.reply).toHaveBeenCalledWith('Andy is online.');
+      expect(ctx.reply).toHaveBeenCalledWith('Ark is online.');
     });
   });
 
