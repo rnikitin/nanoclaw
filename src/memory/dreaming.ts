@@ -21,6 +21,7 @@ import {
 import { join, basename } from 'path';
 import { logger } from '../logger.js';
 import { CREDENTIAL_PROXY_PORT } from '../config.js';
+import { PROXY_BIND_HOST } from '../container-runtime.js';
 import {
   loadRecallStore,
   saveRecallStore,
@@ -221,7 +222,7 @@ export function lightSleep(groupDir: string): LightSleepResult {
 // ─── Concept Tag Enrichment (Haiku LLM) ─────────────────────
 
 const ENRICHMENT_BATCH_SIZE = 10;
-const PROXY_URL = `http://127.0.0.1:${CREDENTIAL_PROXY_PORT}`;
+const PROXY_URL = `http://${PROXY_BIND_HOST}:${CREDENTIAL_PROXY_PORT}`;
 
 /**
  * Enrich concept tags for recall entries using Haiku LLM.
@@ -234,7 +235,7 @@ export async function enrichConceptTags(groupDir: string): Promise<number> {
 
   // Find entries needing enrichment: recallCount > 0 but tags are empty or trivial
   const needsEnrichment = entries
-    .filter(e => e.recallCount > 0 && e.conceptTags.length < 3)
+    .filter((e) => e.recallCount > 0 && e.conceptTags.length < 3)
     .slice(0, ENRICHMENT_BATCH_SIZE);
 
   if (needsEnrichment.length === 0) return 0;
@@ -270,12 +271,18 @@ export async function enrichConceptTags(groupDir: string): Promise<number> {
     const tagArrays: string[][] = JSON.parse(jsonMatch[0]);
     let enriched = 0;
 
-    for (let i = 0; i < Math.min(tagArrays.length, needsEnrichment.length); i++) {
+    for (
+      let i = 0;
+      i < Math.min(tagArrays.length, needsEnrichment.length);
+      i++
+    ) {
       const tags = tagArrays[i];
       if (Array.isArray(tags) && tags.length > 0) {
         const entry = store.entries[needsEnrichment[i].contentHash];
         if (entry) {
-          entry.conceptTags = tags.slice(0, 8).map(t => String(t).toLowerCase());
+          entry.conceptTags = tags
+            .slice(0, 8)
+            .map((t) => String(t).toLowerCase());
           enriched++;
         }
       }
@@ -287,7 +294,10 @@ export async function enrichConceptTags(groupDir: string): Promise<number> {
 
     return enriched;
   } catch (err) {
-    logger.debug({ err, group: basename(groupDir) }, 'Concept tag enrichment failed (non-fatal)');
+    logger.debug(
+      { err, group: basename(groupDir) },
+      'Concept tag enrichment failed (non-fatal)',
+    );
     return 0;
   }
 }
@@ -394,7 +404,11 @@ export function deepSleep(groupDir: string): DeepSleepResult {
   // 0. Health check — prune stale entries, re-seed if needed
   const health = checkAndRecoverStore(groupDir);
   logger.info(
-    { group: basename(groupDir), health: health.healthScore.toFixed(3), reseeded: health.reseeded },
+    {
+      group: basename(groupDir),
+      health: health.healthScore.toFixed(3),
+      reseeded: health.reseeded,
+    },
     'Deep sleep health check',
   );
 
@@ -511,9 +525,9 @@ export function deepSleep(groupDir: string): DeepSleepResult {
 
 export interface StoreHealthReport {
   totalEntries: number;
-  activeEntries: number;   // recallCount > 0
-  staleEntries: number;    // not recalled in 30+ days
-  healthScore: number;     // 0-1
+  activeEntries: number; // recallCount > 0
+  staleEntries: number; // not recalled in 30+ days
+  healthScore: number; // 0-1
   reseeded: boolean;
 }
 
@@ -528,22 +542,27 @@ export function checkAndRecoverStore(groupDir: string): StoreHealthReport {
   const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
 
   const totalEntries = entries.length;
-  const activeEntries = entries.filter(e => e.recallCount > 0).length;
+  const activeEntries = entries.filter((e) => e.recallCount > 0).length;
   const staleEntries = entries.filter(
-    e => now - new Date(e.lastRecalled).getTime() > thirtyDaysMs
+    (e) => now - new Date(e.lastRecalled).getTime() > thirtyDaysMs,
   ).length;
 
   // Health score: weighted combination of activity ratio and freshness
   const activityRatio = totalEntries > 0 ? activeEntries / totalEntries : 0;
-  const freshnessRatio = totalEntries > 0 ? 1 - (staleEntries / totalEntries) : 0;
+  const freshnessRatio = totalEntries > 0 ? 1 - staleEntries / totalEntries : 0;
   const healthScore = activityRatio * 0.6 + freshnessRatio * 0.4;
 
   let reseeded = false;
 
   if (healthScore < 0.35 && totalEntries > 0) {
     logger.info(
-      { group: basename(groupDir), healthScore: healthScore.toFixed(3), activeEntries, staleEntries },
-      'Recall store health low, pruning stale entries'
+      {
+        group: basename(groupDir),
+        healthScore: healthScore.toFixed(3),
+        activeEntries,
+        staleEntries,
+      },
+      'Recall store health low, pruning stale entries',
     );
 
     // Prune entries that are stale AND have never been actively recalled

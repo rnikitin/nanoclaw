@@ -39,15 +39,21 @@ function removeDraftMarker(skillPath: string): void {
 /**
  * Copy a skill to the global auto-skills directory.
  */
-function copyToGlobal(
-  sourceGroup: string,
-  skillName: string,
-): string | null {
-  const srcDir = path.join(GROUPS_DIR, sourceGroup, 'skills', 'auto', skillName);
+function copyToGlobal(sourceGroup: string, skillName: string): string | null {
+  const srcDir = path.join(
+    GROUPS_DIR,
+    sourceGroup,
+    'skills',
+    'auto',
+    skillName,
+  );
   const dstDir = path.join(GROUPS_DIR, 'global', 'skills', 'auto', skillName);
 
   if (!fs.existsSync(srcDir)) {
-    logger.warn({ sourceGroup, skillName }, 'Source skill directory not found for global promotion');
+    logger.warn(
+      { sourceGroup, skillName },
+      'Source skill directory not found for global promotion',
+    );
     return null;
   }
 
@@ -67,10 +73,19 @@ function copyToGlobal(
 export function runPromotionCycle(): void {
   try {
     // Draft → Local
-    const draftCandidates = getPromotionCandidates('draft', MIN_USES, MIN_SUCCESS_RATE);
+    const draftCandidates = getPromotionCandidates(
+      'draft',
+      MIN_USES,
+      MIN_SUCCESS_RATE,
+    );
     for (const candidate of draftCandidates) {
       const skillPath = path.join(
-        GROUPS_DIR, candidate.sourceGroup, 'skills', 'auto', candidate.skillName, 'SKILL.md',
+        GROUPS_DIR,
+        candidate.sourceGroup,
+        'skills',
+        'auto',
+        candidate.skillName,
+        'SKILL.md',
       );
 
       removeDraftMarker(skillPath);
@@ -88,9 +103,16 @@ export function runPromotionCycle(): void {
     }
 
     // Local → Global
-    const localCandidates = getPromotionCandidates('local', MIN_USES, MIN_SUCCESS_RATE);
+    const localCandidates = getPromotionCandidates(
+      'local',
+      MIN_USES,
+      MIN_SUCCESS_RATE,
+    );
     for (const candidate of localCandidates) {
-      const globalDir = copyToGlobal(candidate.sourceGroup, candidate.skillName);
+      const globalDir = copyToGlobal(
+        candidate.sourceGroup,
+        candidate.skillName,
+      );
       if (!globalDir) continue;
 
       promoteSkill(candidate.skillName, 'global');
@@ -110,7 +132,10 @@ export function runPromotionCycle(): void {
     const totalPromoted = draftCandidates.length + localCandidates.length;
     if (totalPromoted > 0) {
       logger.info(
-        { draftsPromoted: draftCandidates.length, localsPromoted: localCandidates.length },
+        {
+          draftsPromoted: draftCandidates.length,
+          localsPromoted: localCandidates.length,
+        },
         'Promotion cycle complete',
       );
     }

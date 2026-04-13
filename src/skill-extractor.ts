@@ -11,6 +11,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { GROUPS_DIR, CREDENTIAL_PROXY_PORT } from './config.js';
+import { PROXY_BIND_HOST } from './container-runtime.js';
 import { logger } from './logger.js';
 import {
   registerAutoSkill,
@@ -20,7 +21,7 @@ import {
 
 const MAX_DRAFTS_PER_DAY = 3;
 const MIN_TRANSCRIPT_TURNS = 3;
-const PROXY_URL = `http://127.0.0.1:${CREDENTIAL_PROXY_PORT}`;
+const PROXY_URL = `http://${PROXY_BIND_HOST}:${CREDENTIAL_PROXY_PORT}`;
 
 // ─── Anthropic API Helper ────────────────────────────────────────────────────
 
@@ -88,7 +89,9 @@ async function classifyTranscript(
 ): Promise<ClassificationResult> {
   const truncated =
     transcript.length > 8000
-      ? transcript.slice(0, 4000) + '\n...[truncated]...\n' + transcript.slice(-4000)
+      ? transcript.slice(0, 4000) +
+        '\n...[truncated]...\n' +
+        transcript.slice(-4000)
       : transcript;
 
   const response = await callAnthropic(
@@ -107,7 +110,10 @@ async function classifyTranscript(
     const parsed = JSON.parse(jsonMatch[0]);
     return {
       isSkill: !!parsed.is_skill,
-      name: (parsed.name || '').toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-'),
+      name: (parsed.name || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, '-')
+        .replace(/-+/g, '-'),
       description: parsed.description || '',
       trigger: parsed.trigger || '',
     };
@@ -140,7 +146,9 @@ async function generateSkillMd(
 ): Promise<string> {
   const truncated =
     transcript.length > 12000
-      ? transcript.slice(0, 6000) + '\n...[truncated]...\n' + transcript.slice(-6000)
+      ? transcript.slice(0, 6000) +
+        '\n...[truncated]...\n' +
+        transcript.slice(-6000)
       : transcript;
 
   const prompt = `Based on this session transcript, generate a SKILL.md for the pattern: "${classification.description}"
@@ -151,12 +159,7 @@ Trigger: ${classification.trigger}
 Transcript:
 ${truncated}`;
 
-  return callAnthropic(
-    'claude-sonnet-4-6',
-    GENERATE_SYSTEM,
-    prompt,
-    4096,
-  );
+  return callAnthropic('claude-sonnet-4-6', GENERATE_SYSTEM, prompt, 4096);
 }
 
 // ─── Main Extraction Pipeline ────────────────────────────────────────────────
@@ -205,7 +208,13 @@ function skillExists(skillName: string, groupFolder: string): boolean {
   if (fs.existsSync(globalSkillDir)) return true;
 
   // Check filesystem — local auto skills
-  const localAutoDir = path.join(GROUPS_DIR, groupFolder, 'skills', 'auto', skillName);
+  const localAutoDir = path.join(
+    GROUPS_DIR,
+    groupFolder,
+    'skills',
+    'auto',
+    skillName,
+  );
   if (fs.existsSync(localAutoDir)) return true;
 
   return false;
@@ -219,16 +228,19 @@ function saveSkillToDisk(
   skillName: string,
   skillMd: string,
 ): string {
-  const skillDir = path.join(GROUPS_DIR, groupFolder, 'skills', 'auto', skillName);
+  const skillDir = path.join(
+    GROUPS_DIR,
+    groupFolder,
+    'skills',
+    'auto',
+    skillName,
+  );
   fs.mkdirSync(skillDir, { recursive: true });
 
   // Inject [draft] marker into the frontmatter description
   let content = skillMd;
   if (!content.includes('[draft]')) {
-    content = content.replace(
-      /^(description:\s*)/m,
-      '$1[draft] ',
-    );
+    content = content.replace(/^(description:\s*)/m, '$1[draft] ');
   }
 
   const skillPath = path.join(skillDir, 'SKILL.md');
@@ -260,7 +272,10 @@ export async function extractSkillFromSession(
     // Get transcript
     const transcript = getLatestTranscript(groupFolder);
     if (!transcript) {
-      logger.debug({ groupFolder }, 'No transcript available for skill extraction');
+      logger.debug(
+        { groupFolder },
+        'No transcript available for skill extraction',
+      );
       return null;
     }
 
@@ -311,7 +326,11 @@ export async function extractSkillFromSession(
     }
 
     // Save to disk
-    const skillPath = saveSkillToDisk(groupFolder, classification.name, skillMd);
+    const skillPath = saveSkillToDisk(
+      groupFolder,
+      classification.name,
+      skillMd,
+    );
 
     // Register in tracker
     registerAutoSkill(
@@ -333,10 +352,7 @@ export async function extractSkillFromSession(
 
     return classification.name;
   } catch (err) {
-    logger.error(
-      { groupFolder, err },
-      'Skill extraction failed',
-    );
+    logger.error({ groupFolder, err }, 'Skill extraction failed');
     return null;
   }
 }

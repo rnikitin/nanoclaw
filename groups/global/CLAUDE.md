@@ -108,14 +108,7 @@ When you learn something important:
 
 ## Notion Integration
 
-If a Notion token is configured, you have full access to Notion via MCP tools (search, read/create/update pages, query databases, comments).
-
-**Setup (one-time per group):**
-1. Ask the user for their Notion integration token (starts with `ntn_`)
-2. Save it: write the token to `/workspace/group/memory/.notion-token`
-3. Tell the user to restart the container — Notion tools will appear on next run
-
-The token file must contain only the token string, nothing else. The integration must have access to the relevant Notion pages (configured at https://www.notion.so/profile/integrations).
+Notion is connected via cloud MCP (mcp.notion.com). On first use, you'll be asked to authorize — the OAuth link is sent to the chat automatically. After authorization, Notion tools (search, read/create/update pages, query databases, comments) work without further setup.
 
 ## Databases
 
@@ -239,7 +232,7 @@ When you create a plan that needs user approval, ALWAYS present it through Canva
 2. Send it to Canvas for review using the helper script:
 
 ```bash
-python3 /workspace/global/skills/canvas-plan/publish-plan.py \
+python3 ~/.claude/skills/canvas-view/publish.py \
   --file /workspace/group/plans/my-plan.md \
   --title "Plan: My Feature"
 ```

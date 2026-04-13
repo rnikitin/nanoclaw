@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """
-Publish a markdown plan to Canvas for interactive review.
+Publish any markdown document to Canvas for interactive review.
+
+Canvas renders markdown as HTML in the browser with inline commenting on every
+section. Use it for plans, reports, task lists, research notes, proposals —
+anything long enough that structured feedback is preferable to chat replies.
 
 Usage:
-  python3 /workspace/global/skills/canvas-plan/publish-plan.py \
-    --file /workspace/group/plans/my-plan.md \
-    --title "Plan: My Feature"
+  python3 ~/.claude/skills/canvas-view/publish.py \
+    --file /workspace/group/docs/my-doc.md \
+    --title "My Document"
 
   # Or pipe markdown directly:
-  echo "# My Plan\n..." | python3 /workspace/global/skills/canvas-plan/publish-plan.py --title "Plan"
+  echo "# Report\n..." | python3 ~/.claude/skills/canvas-view/publish.py --title "Report"
 
 Prints the canvas URL to stdout.
 """
@@ -22,9 +26,11 @@ import time
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Publish a plan to Canvas")
+    parser = argparse.ArgumentParser(
+        description="Publish a markdown document to Canvas for interactive review"
+    )
     parser.add_argument("--file", "-f", help="Path to markdown file")
-    parser.add_argument("--title", "-t", default="Plan Review", help="Canvas title")
+    parser.add_argument("--title", "-t", default="Document", help="Canvas title")
     parser.add_argument("--canvas-id", help="Custom canvas ID (auto-generated if not set)")
     args = parser.parse_args()
 
@@ -39,12 +45,12 @@ def main():
         sys.exit(1)
 
     if not markdown.strip():
-        print("Error: empty plan", file=sys.stderr)
+        print("Error: empty document", file=sys.stderr)
         sys.exit(1)
 
-    # Read the plan-review JSX component
+    # Read the viewer JSX component
     skill_dir = os.path.dirname(os.path.abspath(__file__))
-    jsx_path = os.path.join(skill_dir, "plan-review.jsx")
+    jsx_path = os.path.join(skill_dir, "viewer.jsx")
     with open(jsx_path) as f:
         jsx = f.read()
 
@@ -54,10 +60,10 @@ def main():
     elif args.file:
         # Use filename for stable IDs (re-publishing updates the same canvas)
         base = os.path.basename(args.file).replace(".md", "")
-        canvas_id = f"plan-{base}"
+        canvas_id = f"doc-{base}"
     else:
         h = hashlib.md5(markdown[:200].encode()).hexdigest()[:8]
-        canvas_id = f"plan-{int(time.time())}-{h}"
+        canvas_id = f"doc-{int(time.time())}-{h}"
 
     group = os.environ.get("NANOCLAW_GROUP_FOLDER", "unknown")
     redis_url = os.environ.get("REDIS_URL", "redis://host.docker.internal:6379")
@@ -94,7 +100,10 @@ def main():
             f.write(msg)
         print(f"Redis unavailable, wrote IPC file: {ipc_path}", file=sys.stderr)
 
-    url = f"https://ark.nikitin.me/canvas/{group}/{canvas_id}"
+    canvas_base = os.environ.get(
+        "CANVAS_URL_BASE", "https://ark.nikitin.me/canvas"
+    ).rstrip("/")
+    url = f"{canvas_base}/{group}/{canvas_id}"
     print(url)
 
 

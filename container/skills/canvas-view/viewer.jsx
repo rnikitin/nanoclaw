@@ -124,12 +124,12 @@ function App({ state, send, theme }) {
       <div style={{ maxWidth: 480, margin: '100px auto', padding: 32, textAlign: 'center' }}>
         <div style={{ fontSize: 48, marginBottom: 24 }}>{totalComments > 0 ? '📝' : '✅'}</div>
         <h2 style={{ fontSize: 20, marginBottom: 8, color: T.textHeading, fontWeight: 600, letterSpacing: T.letterSpacing }}>
-          {totalComments > 0 ? 'Feedback sent' : 'Plan approved'}
+          {totalComments > 0 ? 'Feedback sent' : 'Approved'}
         </h2>
         <p style={{ color: T.textMuted, fontSize: 14, lineHeight: 1.6 }}>
           {totalComments > 0
-            ? `${totalComments} comment${totalComments > 1 ? 's' : ''} sent. The plan will be revised.`
-            : 'The agent will proceed with this plan.'}
+            ? `${totalComments} comment${totalComments > 1 ? 's' : ''} sent.`
+            : 'The agent will proceed.'}
         </p>
       </div>
     );
@@ -266,7 +266,7 @@ function App({ state, send, theme }) {
           ) : (
             <button onClick={handleApprove}
               style={{ flex: 1, padding: '12px 16px', fontSize: 14, fontWeight: 500, background: T.accent, color: '#fff', border: 'none', borderRadius: T.radius, cursor: 'pointer', minHeight: T.bottomBarHeight, transition: T.transition, letterSpacing: '-0.01em' }}>
-              Approve plan
+              Approve
             </button>
           )}
         </div>

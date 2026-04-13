@@ -115,7 +115,10 @@ export function startDreamingScheduler(): void {
     // Async enrichment — fire and forget
     for (const groupDir of getGroupDirs()) {
       enrichConceptTags(groupDir).catch((err) => {
-        logger.debug({ err, group: groupDir.split('/').pop() }, 'Tag enrichment failed (non-fatal)');
+        logger.debug(
+          { err, group: groupDir.split('/').pop() },
+          'Tag enrichment failed (non-fatal)',
+        );
       });
     }
   }, LIGHT_INTERVAL_MS);

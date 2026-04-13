@@ -819,9 +819,11 @@ function handleHostOnlyInline(
     return false;
   }
 
-  channel.sendMessage(chatJid, reply).catch((err) =>
-    logger.warn({ chatJid, cmd, err }, 'Host-only inline sendMessage failed'),
-  );
+  channel
+    .sendMessage(chatJid, reply)
+    .catch((err) =>
+      logger.warn({ chatJid, cmd, err }, 'Host-only inline sendMessage failed'),
+    );
 
   lastAgentTimestamp[chatJid] = batchLastTimestamp;
   saveState();

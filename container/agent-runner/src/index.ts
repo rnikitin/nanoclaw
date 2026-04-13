@@ -72,6 +72,7 @@ interface SDKUserMessage {
 
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
+const IPC_MESSAGES_DIR = '/workspace/ipc/messages';
 const USAGE_FILE = '/workspace/ipc/usage.json';
 
 /** Usage info persisted to disk so the host can read it for /usage. */
@@ -446,13 +447,15 @@ function waitForIpcMessage(): Promise<string | null> {
  * Also pipes IPC messages into the stream during the query.
  */
 
-const NOTION_TOKEN_PATH = '/workspace/group/memory/.notion-token';
+type McpConfig =
+  | { command: string; args: string[]; env?: Record<string, string> }
+  | { type: 'http'; url: string; headers?: Record<string, string> };
 
 function buildMcpServers(
   mcpServerPath: string,
   containerInput: ContainerInput,
-): Record<string, { command: string; args: string[]; env?: Record<string, string> }> {
-  const servers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {
+): Record<string, McpConfig> {
+  const servers: Record<string, McpConfig> = {
     nanoclaw: {
       command: 'node',
       args: [mcpServerPath],
@@ -470,24 +473,34 @@ function buildMcpServers(
         NANOCLAW_GROUP_DIR: '/workspace/group',
       },
     },
+    notion: process.env.NOTION_ACCESS_TOKEN
+      ? {
+          type: 'http' as const,
+          url: 'https://mcp.notion.com/mcp',
+          headers: { 'Authorization': `Bearer ${process.env.NOTION_ACCESS_TOKEN}` },
+        }
+      : {
+          type: 'http' as const,
+          url: 'https://mcp.notion.com/mcp',
+        },
   };
 
-  // Add Notion MCP if token is configured
-  try {
-    if (fs.existsSync(NOTION_TOKEN_PATH)) {
-      const token = fs.readFileSync(NOTION_TOKEN_PATH, 'utf-8').trim();
-      if (token && token.startsWith('ntn_')) {
-        servers.notion = {
-          command: 'easy-notion-mcp',
-          args: [],
-          env: { NOTION_TOKEN: token },
-        };
-        log('Notion MCP enabled (token found)');
-      }
-    }
-  } catch { /* no notion */ }
-
   return servers;
+}
+
+function sendIpcMessage(chatJid: string, groupFolder: string, text: string): void {
+  fs.mkdirSync(IPC_MESSAGES_DIR, { recursive: true });
+  const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
+  const filepath = path.join(IPC_MESSAGES_DIR, filename);
+  const tempPath = `${filepath}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify({
+    type: 'message',
+    chatJid,
+    text,
+    groupFolder,
+    timestamp: new Date().toISOString(),
+  }, null, 2));
+  fs.renameSync(tempPath, filepath);
 }
 
 async function runQuery(
@@ -575,6 +588,18 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  // Per-group model + effort injected by container-runner as env vars.
+  // Fall back gracefully if unset (e.g. local dev without host orchestrator).
+  const primaryModel = process.env.NANOCLAW_PRIMARY_MODEL || undefined;
+  const rawEffort = process.env.NANOCLAW_REASONING_EFFORT;
+  const effort: 'low' | 'medium' | 'high' | 'max' | undefined =
+    rawEffort === 'low' || rawEffort === 'medium' || rawEffort === 'high' || rawEffort === 'max'
+      ? rawEffort
+      : undefined;
+  if (primaryModel || effort) {
+    log(`Model config: model=${primaryModel ?? '(sdk default)'} effort=${effort ?? '(sdk default)'}`);
+  }
+
   for await (const message of query({
     prompt: stream,
     options: {
@@ -582,6 +607,8 @@ async function runQuery(
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
+      model: primaryModel,
+      effort,
       systemPrompt: globalClaudeMd
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
         : undefined,
@@ -602,6 +629,19 @@ async function runQuery(
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
       mcpServers: buildMcpServers(mcpServerPath, containerInput),
+      onElicitation: async (request) => {
+        if (request.mode === 'url' && request.url) {
+          log(`MCP OAuth requested by ${request.serverName}: ${request.url}`);
+          sendIpcMessage(
+            containerInput.chatJid,
+            containerInput.groupFolder,
+            `🔑 ${request.serverName} needs authorization. Open this link:\n${request.url}`,
+          );
+          return { action: 'accept' as const };
+        }
+        log(`Declining elicitation from ${request.serverName}: ${request.mode}`);
+        return { action: 'decline' as const };
+      },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
       },
@@ -806,6 +846,21 @@ async function main(): Promise<void> {
       error: `Failed to parse input: ${err instanceof Error ? err.message : String(err)}`
     });
     process.exit(1);
+  }
+
+  try {
+    const skillsDir = '/home/node/.claude/skills';
+    if (fs.existsSync(skillsDir)) {
+      const skills = fs.readdirSync(skillsDir).filter((n) => {
+        try { return fs.statSync(path.join(skillsDir, n)).isDirectory(); }
+        catch { return false; }
+      });
+      log(`Visible skills (${skills.length}): ${skills.sort().join(', ')}`);
+    } else {
+      log(`No skills dir at ${skillsDir}`);
+    }
+  } catch (err) {
+    log(`Skill listing failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // Credentials are injected by the host's credential proxy via ANTHROPIC_BASE_URL.

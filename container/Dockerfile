@@ -41,8 +41,8 @@ RUN mkdir -p -m 755 /etc/apt/keyrings \
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Install agent-browser, claude-code, qmd (memory search), and notion MCP globally
-RUN npm install -g agent-browser @anthropic-ai/claude-code @tobilu/qmd easy-notion-mcp
+# Install agent-browser, claude-code, and qmd (memory search) globally
+RUN npm install -g agent-browser @anthropic-ai/claude-code @tobilu/qmd
 
 # Create app directory
 WORKDIR /app
@@ -64,17 +64,19 @@ RUN chmod +x /usr/local/bin/pdf-reader
 COPY scripts/notify /usr/local/bin/notify
 RUN chmod +x /usr/local/bin/notify
 
-# Build TypeScript
-RUN npm run build
+# Build TypeScript and record source hash so runtime can skip recompile if unchanged
+RUN npm run build \
+ && find src -name '*.ts' -type f -print0 | sort -z | xargs -0 md5sum | md5sum | awk '{print $1}' > /app/dist/.build-hash
 
 # Create workspace directories
 RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/messages /workspace/ipc/tasks /workspace/ipc/input
 
-# Create entrypoint script
+# Install entrypoint
 # Container input (prompt, group info) is passed via stdin JSON.
 # Credentials are injected by the host's credential proxy — never passed here.
 # Follow-up messages arrive via IPC files in /workspace/ipc/input/
-RUN printf '#!/bin/bash\nset -e\ncd /app && npx tsc --outDir /tmp/dist 2>&1 >&2\nln -s /app/node_modules /tmp/dist/node_modules\nchmod -R a-w /tmp/dist\ncat > /tmp/input.json\nnode /tmp/dist/index.js < /tmp/input.json\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 # Set ownership to node user (non-root) for writable directories
 RUN chown -R node:node /workspace && chmod 777 /home/node

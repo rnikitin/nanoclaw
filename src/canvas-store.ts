@@ -49,9 +49,7 @@ export function initCanvasStore(): void {
   `);
 
   // Load all into cache
-  const rows = db
-    .prepare('SELECT * FROM canvases')
-    .all() as Array<{
+  const rows = db.prepare('SELECT * FROM canvases').all() as Array<{
     canvas_id: string;
     group: string;
     chat_jid: string;
@@ -182,9 +180,9 @@ export function cleanupExpiredCanvases(): string[] {
   }
   if (expired.length > 0) {
     const placeholders = expired.map(() => '?').join(',');
-    db.prepare(
-      `DELETE FROM canvases WHERE canvas_id IN (${placeholders})`,
-    ).run(...expired);
+    db.prepare(`DELETE FROM canvases WHERE canvas_id IN (${placeholders})`).run(
+      ...expired,
+    );
   }
   return expired;
 }

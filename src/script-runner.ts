@@ -107,7 +107,7 @@ export async function runScriptTask(
   const mounts = buildVolumeMounts(group, isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-script-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
+  const containerArgs = buildContainerArgs(mounts, containerName, group.folder);
 
   const input: ContainerInput = {
     prompt: task.prompt,

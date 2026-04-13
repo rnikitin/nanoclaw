@@ -169,7 +169,9 @@ export function resolveGroupModel(groupFolder: string): ResolvedGroupModel {
   };
 }
 
-export function resolveGroupAutoCompact(groupFolder: string): AutoCompactConfig {
+export function resolveGroupAutoCompact(
+  groupFolder: string,
+): AutoCompactConfig {
   return resolveGroupModel(groupFolder).autoCompact;
 }
 

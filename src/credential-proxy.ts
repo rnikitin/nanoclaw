@@ -132,11 +132,15 @@ export function startCredentialProxy(
           }
         }
 
+        // Preserve base path from ANTHROPIC_BASE_URL (e.g. /api for OpenRouter)
+        const basePath = upstreamUrl.pathname.replace(/\/$/, '');
+        const upstreamPath = basePath + req.url;
+
         const upstream = makeRequest(
           {
             hostname: upstreamUrl.hostname,
             port: upstreamUrl.port || (isHttps ? 443 : 80),
-            path: req.url,
+            path: upstreamPath,
             method: req.method,
             headers,
           } as RequestOptions,

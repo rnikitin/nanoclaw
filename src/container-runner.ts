@@ -3,6 +3,7 @@
  * Spawns agent execution in containers and handles IPC
  */
 import { ChildProcess, exec, spawn } from 'child_process';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -17,6 +18,7 @@ import {
   TIMEZONE,
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
+import { resolveGroupModel } from './group-models.js';
 import { logger } from './logger.js';
 import {
   CONTAINER_HOST_GATEWAY,
@@ -33,6 +35,27 @@ import { RegisteredGroup } from './types.js';
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
+
+/**
+ * MD5 of all .ts file contents in a directory. Stable across mtimes so we can
+ * detect real source changes and skip no-op syncs.
+ */
+function hashTsDir(dir: string): string {
+  const hash = crypto.createHash('md5');
+  function walk(d: string): void {
+    for (const name of fs.readdirSync(d).sort()) {
+      const full = path.join(d, name);
+      const stat = fs.statSync(full);
+      if (stat.isDirectory()) walk(full);
+      else if (name.endsWith('.ts')) {
+        hash.update(full.slice(dir.length));
+        hash.update(fs.readFileSync(full));
+      }
+    }
+  }
+  walk(dir);
+  return hash.digest('hex');
+}
 
 export interface ContainerInput {
   prompt: string;
@@ -107,12 +130,22 @@ export function buildVolumeMounts(
     });
 
     // Global memory directory (read-only for non-main)
-    // Only directory mounts are supported, not file mounts
     const globalDir = path.join(GROUPS_DIR, 'global');
     if (fs.existsSync(globalDir)) {
       mounts.push({
         hostPath: globalDir,
         containerPath: '/workspace/global',
+        readonly: true,
+      });
+    }
+
+    // Mount shared skills. Cannot nest inside read-only /workspace/global,
+    // so use a separate path for non-main groups.
+    const sharedSkillsDir = path.join(projectRoot, 'container', 'skills');
+    if (fs.existsSync(sharedSkillsDir)) {
+      mounts.push({
+        hostPath: sharedSkillsDir,
+        containerPath: '/workspace/skills',
         readonly: true,
       });
     }
@@ -133,6 +166,9 @@ export function buildVolumeMounts(
       settingsFile,
       JSON.stringify(
         {
+          permissions: {
+            allow: ['Bash(*)'],
+          },
           env: {
             // Enable agent swarms (subagent orchestration)
             // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
@@ -149,6 +185,29 @@ export function buildVolumeMounts(
         2,
       ) + '\n',
     );
+  } else {
+    // Remove hardcoded "model" field from settings — env vars are authoritative
+    try {
+      const existing = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+      if (existing.model) {
+        delete existing.model;
+        fs.writeFileSync(
+          settingsFile,
+          JSON.stringify(existing, null, 2) + '\n',
+        );
+      }
+    } catch {
+      /* ignore malformed settings */
+    }
+  }
+
+  // Sync the shared user-level CLAUDE.md (behavioral guidelines) into each
+  // group's .claude/CLAUDE.md so Claude Code inside the container loads it as
+  // user-level memory. Single source of truth — avoids duplication in every
+  // group CLAUDE.md.
+  const userClaudeSrc = path.join(process.cwd(), 'container', 'user-claude.md');
+  if (fs.existsSync(userClaudeSrc)) {
+    fs.copyFileSync(userClaudeSrc, path.join(groupSessionsDir, 'CLAUDE.md'));
   }
 
   // Sync skills from container/skills/ into each group's .claude/skills/
@@ -221,7 +280,17 @@ export function buildVolumeMounts(
     'agent-runner-src',
   );
   if (fs.existsSync(agentRunnerSrc)) {
-    fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+    // Hash source content; skip the copy when it matches what we've already
+    // synced. cpSync bumps mtimes which would break the container's tsc-skip.
+    const srcHash = hashTsDir(agentRunnerSrc);
+    const hashFile = path.join(groupAgentRunnerDir, '.source-hash');
+    const prevHash = fs.existsSync(hashFile)
+      ? fs.readFileSync(hashFile, 'utf8')
+      : '';
+    if (srcHash !== prevHash) {
+      fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+      fs.writeFileSync(hashFile, srcHash);
+    }
   }
   mounts.push({
     hostPath: groupAgentRunnerDir,
@@ -287,6 +356,7 @@ export function buildVolumeMounts(
 export function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  groupFolder: string,
 ): string[] {
   const args: string[] = [
     'run',
@@ -326,12 +396,44 @@ export function buildContainerArgs(
     args.push('-e', `GITHUB_TOKEN=${ghToken}`);
   }
 
+  // Per-group model + reasoning effort from ~/.config/nanoclaw/group-models.json.
+  // The tier env vars (ANTHROPIC_DEFAULT_*_MODEL) drive subagent/task-tool model
+  // selection; NANOCLAW_PRIMARY_MODEL and NANOCLAW_REASONING_EFFORT are read by
+  // the in-container agent-runner and applied to query() options.
+  const resolved = resolveGroupModel(groupFolder);
+  args.push('-e', `ANTHROPIC_DEFAULT_OPUS_MODEL=${resolved.tiers.opus}`);
+  args.push('-e', `ANTHROPIC_DEFAULT_SONNET_MODEL=${resolved.tiers.sonnet}`);
+  args.push('-e', `ANTHROPIC_DEFAULT_HAIKU_MODEL=${resolved.tiers.haiku}`);
+  args.push('-e', `NANOCLAW_PRIMARY_MODEL=${resolved.primaryModel}`);
+  args.push('-e', `NANOCLAW_REASONING_EFFORT=${resolved.effort}`);
+
+  // Pass Notion OAuth access token (if configured via notion-oauth.sh)
+  const notionOAuthFile = path.join(DATA_DIR, 'notion-oauth.json');
+  try {
+    if (fs.existsSync(notionOAuthFile)) {
+      const oauth = JSON.parse(fs.readFileSync(notionOAuthFile, 'utf-8'));
+      if (oauth.access_token && oauth.status === 'active') {
+        args.push('-e', `NOTION_ACCESS_TOKEN=${oauth.access_token}`);
+      }
+    }
+  } catch {
+    /* no notion oauth */
+  }
+
   // Pass Redis/Postgres connection info for containers that need them
   args.push('-e', `REDIS_URL=redis://${CONTAINER_HOST_GATEWAY}:6379`);
   args.push(
     '-e',
     `DATABASE_URL=postgresql://tronn3:tronn3@${CONTAINER_HOST_GATEWAY}:5432/tronn3`,
   );
+
+  // Canvas URL base for the canvas-view skill. Falls back inside the script.
+  const canvasBase =
+    readEnvFile(['CANVAS_URL_BASE']).CANVAS_URL_BASE ||
+    process.env.CANVAS_URL_BASE;
+  if (canvasBase) {
+    args.push('-e', `CANVAS_URL_BASE=${canvasBase}`);
+  }
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
@@ -373,7 +475,7 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
+  const containerArgs = buildContainerArgs(mounts, containerName, group.folder);
 
   logger.debug(
     {

@@ -66,7 +66,13 @@ export function recordSkillUsage(
   const stmt = db.prepare(
     'INSERT INTO skill_usage (skill_name, group_folder, ts, success, tokens_used) VALUES (?, ?, ?, ?, ?)',
   );
-  stmt.run(skillName, groupFolder, new Date().toISOString(), success ? 1 : 0, tokensUsed);
+  stmt.run(
+    skillName,
+    groupFolder,
+    new Date().toISOString(),
+    success ? 1 : 0,
+    tokensUsed,
+  );
 }
 
 export interface SkillStats {
@@ -78,7 +84,10 @@ export interface SkillStats {
   lastUsed: string;
 }
 
-export function getSkillStats(skillName: string, groupFolder?: string): SkillStats | null {
+export function getSkillStats(
+  skillName: string,
+  groupFolder?: string,
+): SkillStats | null {
   const where = groupFolder
     ? 'WHERE skill_name = ? AND group_folder = ?'
     : 'WHERE skill_name = ?';
@@ -166,7 +175,13 @@ export function registerAutoSkill(
       description = excluded.description,
       trigger_hint = excluded.trigger_hint
   `);
-  stmt.run(skillName, sourceGroup, new Date().toISOString(), description, triggerHint);
+  stmt.run(
+    skillName,
+    sourceGroup,
+    new Date().toISOString(),
+    description,
+    triggerHint,
+  );
 }
 
 export function getAutoSkill(skillName: string): AutoSkillRecord | null {
@@ -190,7 +205,9 @@ export function getAutoSkill(skillName: string): AutoSkillRecord | null {
 
 export function getAutoSkillsByStatus(status: string): AutoSkillRecord[] {
   const rows = db
-    .prepare('SELECT * FROM auto_skills WHERE status = ? ORDER BY created_at DESC')
+    .prepare(
+      'SELECT * FROM auto_skills WHERE status = ? ORDER BY created_at DESC',
+    )
     .all(status) as any[];
 
   return rows.map((row) => ({
@@ -241,7 +258,8 @@ export function getPromotionCandidates(
   const candidates: Array<AutoSkillRecord & { stats: SkillStats }> = [];
 
   for (const skill of skills) {
-    const groupFilter = currentStatus === 'draft' ? skill.sourceGroup : undefined;
+    const groupFilter =
+      currentStatus === 'draft' ? skill.sourceGroup : undefined;
     const stats = getSkillStats(skill.skillName, groupFilter);
     if (!stats) continue;
 
