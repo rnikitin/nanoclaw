@@ -81,7 +81,6 @@ function shingles(text: string, n = 3): Set<string> {
   return result;
 }
 
-
 // ─── Three-Stage Pipeline ────────────────────────────────────
 
 export interface DedupEntry {

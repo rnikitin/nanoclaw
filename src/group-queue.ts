@@ -6,6 +6,7 @@ import { AutoCompactReason } from './auto-compact.js';
 import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
 import { stopContainer } from './container-runtime.js';
 import { ensureDir } from './fs-utils.js';
+import { writeIpcJsonAtomic } from './ipc-write.js';
 import { logger } from './logger.js';
 
 interface QueuedTask {
@@ -212,17 +213,7 @@ export class GroupQueue {
     state.idleWaiting = false; // Agent is about to receive work, no longer idle
 
     const inputDir = path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
-    try {
-      ensureDir(inputDir);
-      const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
-      const filepath = path.join(inputDir, filename);
-      const tempPath = `${filepath}.tmp`;
-      fs.writeFileSync(tempPath, JSON.stringify({ type: 'message', text }));
-      fs.renameSync(tempPath, filepath);
-      return true;
-    } catch {
-      return false;
-    }
+    return writeIpcJsonAtomic(inputDir, { type: 'message', text }) !== null;
   }
 
   /**
