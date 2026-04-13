@@ -96,8 +96,18 @@ interface UsageData {
 
 function saveUsageData(data: UsageData): void {
   data.updatedAt = Date.now();
+  // Preserve lastCompact (host-owned telemetry) via read-merge-write.
+  let merged: Record<string, unknown> = { ...data };
   try {
-    fs.writeFileSync(USAGE_FILE, JSON.stringify(data));
+    const existing = JSON.parse(fs.readFileSync(USAGE_FILE, 'utf-8'));
+    if (existing && typeof existing === 'object' && 'lastCompact' in existing) {
+      merged.lastCompact = existing.lastCompact;
+    }
+  } catch {
+    // no existing file
+  }
+  try {
+    fs.writeFileSync(USAGE_FILE, JSON.stringify(merged));
   } catch (err) {
     log(`Failed to write usage file: ${err instanceof Error ? err.message : String(err)}`);
   }

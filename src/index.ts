@@ -197,6 +197,12 @@ function formatUsageReport(
       }
     >;
     updatedAt?: number;
+    lastCompact?: {
+      firedAt?: number;
+      reason?: 'idle' | 'manual';
+      tokenPercentAtFire?: number;
+      inputTokensAtFire?: number;
+    };
   };
 
   try {
@@ -303,6 +309,21 @@ function formatUsageReport(
     if (sevenLine) lines.push(sevenLine);
   } else {
     lines.push('\n_Rate limit info not yet available_');
+  }
+
+  if (data.lastCompact?.firedAt) {
+    const ageMin = Math.round((Date.now() - data.lastCompact.firedAt) / 60000);
+    const ageStr =
+      ageMin < 60
+        ? `${ageMin}m ago`
+        : ageMin < 1440
+          ? `${Math.floor(ageMin / 60)}h ${ageMin % 60}m ago`
+          : `${Math.floor(ageMin / 1440)}d ago`;
+    const pct = data.lastCompact.tokenPercentAtFire;
+    const pctStr = pct != null ? ` ${pct.toFixed(1)}%` : '';
+    const reason = data.lastCompact.reason ?? 'unknown';
+    lines.push('');
+    lines.push(`**Last compact:** ${ageStr} (${reason}${pctStr})`);
   }
 
   return lines.join('\n');
