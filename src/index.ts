@@ -1340,7 +1340,7 @@ async function main(): Promise<void> {
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
-    onTasksChanged: () => {
+    onTasksChanged: (affectedGroupFolder: string) => {
       const tasks = getAllTasks();
       const runningIds = getRunningScriptTaskIds();
       const taskRows = tasks.map((t) => ({
@@ -1354,8 +1354,13 @@ async function main(): Promise<void> {
         execution_mode: t.execution_mode,
         is_running: runningIds.has(t.id),
       }));
+      // Only the affected group + main groups read their snapshot proactively.
+      // Non-main groups' snapshots are also regenerated on container spawn
+      // (see runAgent), so skipping them here is safe.
       for (const group of Object.values(registeredGroups)) {
-        writeTasksSnapshot(group.folder, group.isMain === true, taskRows);
+        const isMain = group.isMain === true;
+        if (!isMain && group.folder !== affectedGroupFolder) continue;
+        writeTasksSnapshot(group.folder, isMain, taskRows);
       }
     },
   });

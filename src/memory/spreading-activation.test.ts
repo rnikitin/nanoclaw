@@ -3,10 +3,7 @@ import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import {
-  _closeKnowledgeGraphHandles,
-  buildGraph,
-} from './knowledge-graph.js';
+import { _closeKnowledgeGraphHandles, buildGraph } from './knowledge-graph.js';
 import {
   _closeSpreadingActivationHandles,
   spreadActivation,
