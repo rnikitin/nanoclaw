@@ -14,20 +14,19 @@ import {
   MAX_CONCURRENT_SCRIPTS,
 } from './config.js';
 import {
+  ContainerOutput,
+  parseOutputMarkers,
+} from './container-markers.js';
+import {
   buildContainerArgs,
   buildVolumeMounts,
   ContainerInput,
-  ContainerOutput,
 } from './container-runner.js';
 import { CONTAINER_RUNTIME_BIN, stopContainer } from './container-runtime.js';
 import { ensureDir } from './fs-utils.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
-
-// Sentinel markers for robust output parsing (must match agent-runner)
-const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
-const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
 interface RunningScript {
   process: ChildProcess;
@@ -171,18 +170,9 @@ export async function runScriptTask(
 
       // Parse output markers
       parseBuffer += chunk;
-      let startIdx: number;
-      while ((startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1) {
-        const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
-        if (endIdx === -1) break;
-
-        const jsonStr = parseBuffer
-          .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
-          .trim();
-        parseBuffer = parseBuffer.slice(endIdx + OUTPUT_END_MARKER.length);
-
-        try {
-          const parsed: ContainerOutput = JSON.parse(jsonStr);
+      parseBuffer = parseOutputMarkers(
+        parseBuffer,
+        (parsed) => {
           if (parsed.newSessionId) newSessionId = parsed.newSessionId;
           if (parsed.result) lastResult = parsed.result;
 
@@ -218,13 +208,13 @@ export async function runScriptTask(
               }, SCRIPT_FORCE_STOP_MS);
             }, SCRIPT_CLOSE_DELAY_MS);
           }
-        } catch (err) {
+        },
+        (err) =>
           logger.warn(
             { taskId: task.id, error: err },
             'Failed to parse script output chunk',
-          );
-        }
-      }
+          ),
+      );
     });
 
     container.stderr.on('data', (data) => {

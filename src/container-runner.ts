@@ -28,14 +28,16 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
+import {
+  ContainerOutput,
+  parseOutputMarkers,
+  OUTPUT_START_MARKER,
+  OUTPUT_END_MARKER,
+} from './container-markers.js';
 import { readEnvFile } from './env.js';
 import { ensureDir } from './fs-utils.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup, TaskSnapshotRow } from './types.js';
-
-// Sentinel markers for robust output parsing (must match agent-runner)
-const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
-const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
 /**
  * MD5 of all .ts file contents in a directory. Stable across mtimes so we can
@@ -69,14 +71,7 @@ export interface ContainerInput {
   thinkingEnabled?: boolean;
 }
 
-export interface ContainerOutput {
-  status: 'success' | 'error';
-  result: string | null;
-  newSessionId?: string;
-  error?: string;
-  isThinking?: boolean;
-  isKeepalive?: boolean;
-}
+export { ContainerOutput };
 
 interface VolumeMount {
   hostPath: string;
@@ -572,18 +567,9 @@ export async function runContainerAgent(
       // Stream-parse for output markers
       if (onOutput) {
         parseBuffer += chunk;
-        let startIdx: number;
-        while ((startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1) {
-          const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
-          if (endIdx === -1) break; // Incomplete pair, wait for more data
-
-          const jsonStr = parseBuffer
-            .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
-            .trim();
-          parseBuffer = parseBuffer.slice(endIdx + OUTPUT_END_MARKER.length);
-
-          try {
-            const parsed: ContainerOutput = JSON.parse(jsonStr);
+        parseBuffer = parseOutputMarkers(
+          parseBuffer,
+          (parsed) => {
             if (parsed.newSessionId) {
               newSessionId = parsed.newSessionId;
             }
@@ -600,13 +586,13 @@ export async function runContainerAgent(
                   'Error in onOutput callback',
                 );
               });
-          } catch (err) {
+          },
+          (err) =>
             logger.warn(
               { group: group.name, error: err },
               'Failed to parse streamed output chunk',
-            );
-          }
-        }
+            ),
+        );
       }
     });
 
