@@ -116,7 +116,31 @@ export async function run(args: string[]): Promise<void> {
     recursive: true,
   });
 
-  // Update assistant name in CLAUDE.md files if different from default
+  // Create CLAUDE.md in the new group folder from template if it doesn't exist.
+  // The agent runs with CWD=/workspace/group and loads CLAUDE.md from there.
+  // isMain groups get groups/main/CLAUDE.md (admin workflow); others get
+  // groups/global/CLAUDE.md (persona + shared features) as a starting point.
+  const groupClaudeMdPath = path.join(
+    projectRoot,
+    'groups',
+    parsed.folder,
+    'CLAUDE.md',
+  );
+  if (!fs.existsSync(groupClaudeMdPath)) {
+    const templatePath = parsed.isMain
+      ? path.join(projectRoot, 'groups', 'main', 'CLAUDE.md')
+      : path.join(projectRoot, 'groups', 'global', 'CLAUDE.md');
+    if (fs.existsSync(templatePath)) {
+      fs.copyFileSync(templatePath, groupClaudeMdPath);
+      logger.info(
+        { file: groupClaudeMdPath, template: templatePath },
+        'Created CLAUDE.md from template',
+      );
+    }
+  }
+
+  // Update assistant name across all groups/*/CLAUDE.md if different from default.
+  // Covers the file just created plus any pre-existing group files.
   let nameUpdated = false;
   if (parsed.assistantName !== 'Ark') {
     logger.info(
@@ -124,22 +148,21 @@ export async function run(args: string[]): Promise<void> {
       'Updating assistant name',
     );
 
-    const mdFiles = [
-      path.join(projectRoot, 'groups', 'global', 'CLAUDE.md'),
-      path.join(projectRoot, 'groups', parsed.folder, 'CLAUDE.md'),
-    ];
+    const groupsDir = path.join(projectRoot, 'groups');
+    const mdFiles = fs
+      .readdirSync(groupsDir)
+      .map((d) => path.join(groupsDir, d, 'CLAUDE.md'))
+      .filter((f) => fs.existsSync(f));
 
     for (const mdFile of mdFiles) {
-      if (fs.existsSync(mdFile)) {
-        let content = fs.readFileSync(mdFile, 'utf-8');
-        content = content.replace(/^# Ark$/m, `# ${parsed.assistantName}`);
-        content = content.replace(
-          /You are Ark/g,
-          `You are ${parsed.assistantName}`,
-        );
-        fs.writeFileSync(mdFile, content);
-        logger.info({ file: mdFile }, 'Updated CLAUDE.md');
-      }
+      let content = fs.readFileSync(mdFile, 'utf-8');
+      content = content.replace(/^# Ark$/m, `# ${parsed.assistantName}`);
+      content = content.replace(
+        /You are Ark/g,
+        `You are ${parsed.assistantName}`,
+      );
+      fs.writeFileSync(mdFile, content);
+      logger.info({ file: mdFile }, 'Updated CLAUDE.md');
     }
 
     nameUpdated = true;

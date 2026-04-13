@@ -359,6 +359,18 @@ Use available_groups.json to find the JID for a group. The folder name must be c
       .describe(
         'Whether messages must start with the trigger word. Default: false (respond to all messages). Set to true for busy groups with many participants where you only want the agent to respond when explicitly mentioned.',
       ),
+    effort: z
+      .enum(['low', 'medium', 'high', 'max'])
+      .optional()
+      .describe(
+        'Reasoning effort override for this group. Writes to ~/.config/nanoclaw/group-models.json. Omit to use the install-wide default.',
+      ),
+    model: z
+      .string()
+      .optional()
+      .describe(
+        'Primary model override for this group (e.g., "claude-sonnet-4-6"). Writes to ~/.config/nanoclaw/group-models.json. Omit to use the install-wide default.',
+      ),
   },
   async (args) => {
     if (!isMain) {
@@ -375,6 +387,8 @@ Use available_groups.json to find the JID for a group. The folder name must be c
       folder: args.folder,
       trigger: args.trigger,
       requiresTrigger: args.requiresTrigger ?? false,
+      effort: args.effort,
+      model: args.model,
       timestamp: new Date().toISOString(),
     };
 

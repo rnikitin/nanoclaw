@@ -162,6 +162,30 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   // Create group folder
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
 
+  // Seed CLAUDE.md from template if the group folder doesn't have one yet.
+  // Agent CWD is /workspace/group; CLAUDE.md must live in the group folder.
+  const groupClaudeMdPath = path.join(groupDir, 'CLAUDE.md');
+  if (!fs.existsSync(groupClaudeMdPath)) {
+    const projectRoot = process.cwd();
+    const templatePath = group.isMain
+      ? path.join(projectRoot, 'groups', 'main', 'CLAUDE.md')
+      : path.join(projectRoot, 'groups', 'global', 'CLAUDE.md');
+    if (fs.existsSync(templatePath)) {
+      try {
+        fs.copyFileSync(templatePath, groupClaudeMdPath);
+        logger.info(
+          { file: groupClaudeMdPath, template: templatePath },
+          'Created CLAUDE.md from template',
+        );
+      } catch (err) {
+        logger.warn(
+          { jid, folder: group.folder, err },
+          'Failed to copy CLAUDE.md template',
+        );
+      }
+    }
+  }
+
   logger.info(
     { jid, name: group.name, folder: group.folder },
     'Group registered',

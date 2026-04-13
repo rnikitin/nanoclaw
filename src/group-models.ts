@@ -170,3 +170,55 @@ export function resolveGroupAutoCompact(
 export function getConfigPath(): string {
   return CONFIG_PATH;
 }
+
+/**
+ * Idempotently write an entry for `folder` into group-models.json.
+ *
+ * If the group already has a non-empty entry, this is a no-op (we don't
+ * overwrite existing customizations). If effort/model are all undefined,
+ * also a no-op. Atomic via tmp-file + rename. Swallows errors with a
+ * warn log — registration must not fail because of this.
+ */
+export function upsertGroupEntry(
+  folder: string,
+  entry: { effort?: Effort; model?: string },
+): void {
+  if (entry.effort === undefined && entry.model === undefined) return;
+
+  try {
+    fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+
+    let raw: { defaults?: unknown; groups?: Record<string, unknown> } = {};
+    if (fs.existsSync(CONFIG_PATH)) {
+      try {
+        raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+      } catch (err) {
+        logger.warn(
+          { err, path: CONFIG_PATH },
+          'group-models.json unparseable; skipping upsert to avoid data loss',
+        );
+        return;
+      }
+    }
+
+    raw.groups = raw.groups || {};
+    const existing = raw.groups[folder] as Partial<GroupModelEntry> | undefined;
+    if (existing && (existing.effort || existing.model)) {
+      return;
+    }
+
+    const merged: Record<string, unknown> = {};
+    if (entry.effort) merged.effort = entry.effort;
+    if (entry.model) merged.model = entry.model;
+    raw.groups[folder] = merged;
+
+    const tmp = `${CONFIG_PATH}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(raw, null, 2));
+    fs.renameSync(tmp, CONFIG_PATH);
+    cached = null;
+    cachedMtime = 0;
+    logger.info({ folder, entry: merged }, 'Upserted group-models entry');
+  } catch (err) {
+    logger.warn({ err, folder }, 'Failed to upsert group-models entry');
+  }
+}

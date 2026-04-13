@@ -7,6 +7,7 @@ import { DATA_DIR, GROUPS_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
+import { Effort, upsertGroupEntry } from './group-models.js';
 import { logger } from './logger.js';
 import { stopScript } from './script-runner.js';
 import { RegisteredGroup } from './types.js';
@@ -313,6 +314,8 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    effort?: string;
+    model?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -609,6 +612,20 @@ export async function processTaskIpc(
           containerConfig: data.containerConfig,
           requiresTrigger: data.requiresTrigger,
         });
+        // Optionally seed group-models.json with effort/model override.
+        // Idempotent: skipped if the group already has a non-empty entry.
+        const effort =
+          typeof data.effort === 'string' &&
+          ['low', 'medium', 'high', 'max'].includes(data.effort)
+            ? (data.effort as Effort)
+            : undefined;
+        const model =
+          typeof data.model === 'string' && data.model.length > 0
+            ? data.model
+            : undefined;
+        if (effort || model) {
+          upsertGroupEntry(data.folder, { effort, model });
+        }
       } else {
         logger.warn(
           { data },
