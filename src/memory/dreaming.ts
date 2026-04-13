@@ -16,12 +16,14 @@ import {
   existsSync,
   readdirSync,
   appendFileSync,
+  chmodSync,
 } from 'fs';
 import { join, basename } from 'path';
 import { logger } from '../logger.js';
 import { CREDENTIAL_PROXY_PORT } from '../config.js';
 import { PROXY_BIND_HOST } from '../container-runtime.js';
 import { ensureDir } from '../fs-utils.js';
+import { ensureDreamsDir, writeDreamsJson } from './dreams-io.js';
 import { jaccard, tokenizeWords } from './similarity.js';
 import {
   loadRecallStore,
@@ -67,16 +69,9 @@ function loadPhaseSignals(groupDir: string): PhaseSignalStore {
 }
 
 function savePhaseSignals(groupDir: string, store: PhaseSignalStore): void {
-  const dreamsDir = join(groupDir, '.dreams');
-  if (!existsSync(dreamsDir)) ensureDir(dreamsDir, 0o777);
+  const dreamsDir = ensureDreamsDir(groupDir);
   store.lastUpdated = new Date().toISOString();
-  const path = join(dreamsDir, 'phase-signals.json');
-  writeFileSync(path, JSON.stringify(store, null, 2));
-  try {
-    require('fs').chmodSync(path, 0o666);
-  } catch {
-    /* ignore */
-  }
+  writeDreamsJson(join(dreamsDir, 'phase-signals.json'), store);
 }
 
 // ─── Daily Notes ──────────────────────────────────────────────
@@ -435,7 +430,7 @@ export function deepSleep(groupDir: string): DeepSleepResult {
       );
     }
     try {
-      require('fs').chmodSync(memoryPath, 0o666);
+      chmodSync(memoryPath, 0o666);
     } catch {
       /* ignore */
     }
@@ -597,44 +592,20 @@ export function setupGroupDreaming(groupDir: string): void {
   // Create empty recall store
   const recallPath = join(dreamsDir, 'short-term-recall.json');
   if (!existsSync(recallPath)) {
-    writeFileSync(
-      recallPath,
-      JSON.stringify(
-        {
-          version: 1,
-          entries: {},
-          lastUpdated: new Date().toISOString(),
-        },
-        null,
-        2,
-      ),
-    );
-    try {
-      require('fs').chmodSync(recallPath, 0o666);
-    } catch {
-      /* ignore */
-    }
+    writeDreamsJson(recallPath, {
+      version: 1,
+      entries: {},
+      lastUpdated: new Date().toISOString(),
+    });
   }
 
   // Create phase signals store
   const signalsPath = join(dreamsDir, 'phase-signals.json');
   if (!existsSync(signalsPath)) {
-    writeFileSync(
-      signalsPath,
-      JSON.stringify(
-        {
-          signals: [],
-          lastUpdated: new Date().toISOString(),
-        },
-        null,
-        2,
-      ),
-    );
-    try {
-      require('fs').chmodSync(signalsPath, 0o666);
-    } catch {
-      /* ignore */
-    }
+    writeDreamsJson(signalsPath, {
+      signals: [],
+      lastUpdated: new Date().toISOString(),
+    });
   }
 
   // Add QMD collection for this group's memory

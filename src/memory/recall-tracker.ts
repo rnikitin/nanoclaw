@@ -13,12 +13,12 @@
  * Storage: groups/{name}/.dreams/short-term-recall.json
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
 
-import { ensureDir } from '../fs-utils.js';
 import { todayISO } from './date-utils.js';
+import { ensureDreamsDir, writeDreamsJson } from './dreams-io.js';
 
 export interface RecallEntry {
   /** Content hash (SHA-1 of chunk text) */
@@ -181,19 +181,9 @@ export function loadRecallStore(groupDir: string): RecallStore {
 }
 
 export function saveRecallStore(groupDir: string, store: RecallStore): void {
-  const dreamsDir = join(groupDir, '.dreams');
-  if (!existsSync(dreamsDir)) {
-    ensureDir(dreamsDir, 0o777);
-  }
+  ensureDreamsDir(groupDir);
   store.lastUpdated = new Date().toISOString();
-  const path = getRecallStorePath(groupDir);
-  writeFileSync(path, JSON.stringify(store, null, 2));
-  try {
-    const { chmodSync } = require('fs');
-    chmodSync(path, 0o666);
-  } catch {
-    /* ignore */
-  }
+  writeDreamsJson(getRecallStorePath(groupDir), store);
 }
 
 /**
