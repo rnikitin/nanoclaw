@@ -227,7 +227,7 @@ export function buildVolumeMounts(
   // workflows live in the group's own CLAUDE.md (mounted separately).
   const parts: string[] = [];
   for (const src of ['agent-tools.md', 'user-claude.md']) {
-    const srcPath = path.join(process.cwd(), 'container', src);
+    const srcPath = path.join(projectRoot, 'container', src);
     if (fs.existsSync(srcPath)) parts.push(fs.readFileSync(srcPath, 'utf8'));
   }
   if (parts.length > 0) {

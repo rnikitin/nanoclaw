@@ -1,5 +1,4 @@
 import Database from 'better-sqlite3';
-import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
@@ -77,7 +76,6 @@ function escapeRegex(str: string): string {
 // ./db.js to avoid a circular import.
 function readMainGroupName(): string | null {
   const dbPath = path.join(STORE_DIR, 'messages.db');
-  if (!fs.existsSync(dbPath)) return null;
   try {
     const db = new Database(dbPath, { readonly: true, fileMustExist: true });
     try {
