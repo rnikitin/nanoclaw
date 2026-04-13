@@ -1,8 +1,11 @@
 /**
  * Pure logic: should we fire /compact for this group right now?
  *
+ * Token-based trigger is delegated to the SDK via
+ * CLAUDE_CODE_AUTO_COMPACT_WINDOW — fires in-process at ~76% of context.
+ * This sweeper only handles the idle case the SDK can't see.
+ *
  * Decides based on:
- *   - token%: inputTokens / contextWindow of the primary model in usage.json
  *   - idle:   now - lastActivityAt exceeds idleMinutes (and tokens > 0)
  *   - cooldown: suppress if we fired within cooldownMinutes
  *
@@ -14,7 +17,7 @@ import path from 'path';
 import { DATA_DIR } from './config.js';
 import { AutoCompactConfig } from './group-models.js';
 
-export type AutoCompactReason = 'token' | 'idle';
+export type AutoCompactReason = 'idle';
 
 export interface AutoCompactDecision {
   fire: boolean;
@@ -120,10 +123,6 @@ export function evaluateGroup(params: {
     now - lastCompactFiredAt < cfg.cooldownMinutes * 60_000
   ) {
     return { fire: false, reason: null, pct, inputTokens };
-  }
-
-  if (pct >= cfg.tokenPercent) {
-    return { fire: true, reason: 'token', pct, inputTokens };
   }
 
   if (

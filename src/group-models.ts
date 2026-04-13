@@ -20,7 +20,6 @@ export type Effort = 'low' | 'medium' | 'high' | 'max';
 
 export interface AutoCompactConfig {
   enabled: boolean;
-  tokenPercent: number;
   idleMinutes: number;
   cooldownMinutes: number;
 }
@@ -66,7 +65,6 @@ const BUILTIN_DEFAULTS: GroupModelsConfig = {
     },
     autoCompact: {
       enabled: true,
-      tokenPercent: 70,
       idleMinutes: 25,
       cooldownMinutes: 10,
     },
@@ -89,12 +87,6 @@ function mergeAutoCompact(
   const r = raw as Partial<AutoCompactConfig>;
   return {
     enabled: typeof r.enabled === 'boolean' ? r.enabled : base.enabled,
-    tokenPercent:
-      typeof r.tokenPercent === 'number' &&
-      r.tokenPercent >= 0 &&
-      r.tokenPercent <= 100
-        ? r.tokenPercent
-        : base.tokenPercent,
     idleMinutes:
       typeof r.idleMinutes === 'number' && r.idleMinutes > 0
         ? r.idleMinutes

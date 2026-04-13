@@ -871,6 +871,9 @@ async function main(): Promise<void> {
     NANOCLAW_CHAT_JID: containerInput.chatJid,
     NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
     NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+    // SDK auto-compact at ~76% of Opus 200k window (effective trigger ≈ 152k).
+    // Host-side sweeper handles idle-based compact; SDK handles token-based.
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW: '165000',
   };
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));

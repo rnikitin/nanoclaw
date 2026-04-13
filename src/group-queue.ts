@@ -2,6 +2,7 @@ import { ChildProcess } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
+import { AutoCompactReason } from './auto-compact.js';
 import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
 import { stopContainer } from './container-runtime.js';
 import { logger } from './logger.js';
@@ -27,7 +28,7 @@ interface GroupState {
   groupFolder: string | null;
   retryCount: number;
   lastActivityAt: number;
-  pendingAutoCompact: { reason: 'token' | 'idle'; queuedAt: number } | null;
+  pendingAutoCompact: { reason: AutoCompactReason; queuedAt: number } | null;
 }
 
 export class GroupQueue {
@@ -79,7 +80,7 @@ export class GroupQueue {
    * consumes via consumePendingAutoCompact before calling processGroupMessages.
    * Dedup: if one is already queued, returns false.
    */
-  queueAutoCompact(groupJid: string, reason: 'token' | 'idle'): boolean {
+  queueAutoCompact(groupJid: string, reason: AutoCompactReason): boolean {
     const state = this.getGroup(groupJid);
     if (state.pendingAutoCompact) return false;
     state.pendingAutoCompact = { reason, queuedAt: Date.now() };
@@ -89,7 +90,7 @@ export class GroupQueue {
 
   consumePendingAutoCompact(
     groupJid: string,
-  ): { reason: 'token' | 'idle'; queuedAt: number } | null {
+  ): { reason: AutoCompactReason; queuedAt: number } | null {
     const state = this.groups.get(groupJid);
     if (!state || !state.pendingAutoCompact) return null;
     const pending = state.pendingAutoCompact;
