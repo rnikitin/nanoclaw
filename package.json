@@ -33,7 +33,7 @@
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
-    "@types/node": "^22.10.0",
+    "@types/node": "^25.6.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitest/coverage-v8": "^4.0.18",
@@ -43,7 +43,7 @@
     "react-dom": "^19.2.4",
     "sucrase": "^3.35.1",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0",
+    "typescript": "^6.0.2",
     "vitest": "^4.0.18"
   },
   "engines": {
