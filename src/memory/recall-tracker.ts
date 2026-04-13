@@ -17,6 +17,8 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
 
+import { todayISO } from './date-utils.js';
+
 export interface RecallEntry {
   /** Content hash (SHA-1 of chunk text) */
   contentHash: string;
@@ -53,10 +55,6 @@ const LOCK_TIMEOUT_MS = 60_000;
 
 function hashString(s: string): string {
   return createHash('sha1').update(s).digest('hex').slice(0, 12);
-}
-
-function today(): string {
-  return new Date().toISOString().slice(0, 10);
 }
 
 function extractConcepts(text: string, maxTags = 8): string[] {
@@ -211,7 +209,7 @@ export function trackRecall(
 ): void {
   const store = loadRecallStore(groupDir);
   const queryHash = hashString(query);
-  const day = today();
+  const day = todayISO();
 
   for (const result of results) {
     const contentHash = hashString(result.content);

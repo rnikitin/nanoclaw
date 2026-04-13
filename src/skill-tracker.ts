@@ -11,6 +11,7 @@ import path from 'path';
 
 import { STORE_DIR } from './config.js';
 import { logger } from './logger.js';
+import { todayISO } from './memory/date-utils.js';
 
 const DB_PATH = path.join(STORE_DIR, 'skills.db');
 
@@ -236,7 +237,7 @@ export function promoteSkill(
  * Used to enforce the daily limit.
  */
 export function getDraftCountToday(groupFolder: string): number {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayISO();
   const row = db
     .prepare(
       `SELECT COUNT(*) as cnt FROM auto_skills

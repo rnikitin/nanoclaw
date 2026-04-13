@@ -37,6 +37,7 @@ import {
 import { buildGraph } from './knowledge-graph.js';
 import { buildTopics, buildGlobals } from './hierarchy.js';
 import { dedupRecallEntries } from './dedup.js';
+import { todayISO } from './date-utils.js';
 
 // ─── Phase Signals ────────────────────────────────────────────
 
@@ -81,7 +82,7 @@ function savePhaseSignals(groupDir: string, store: PhaseSignalStore): void {
 // ─── Daily Notes ──────────────────────────────────────────────
 
 function getDailyNotePath(groupDir: string, date?: string): string {
-  const d = date || new Date().toISOString().slice(0, 10);
+  const d = date || todayISO();
   return join(groupDir, 'memory', `${d}.md`);
 }
 

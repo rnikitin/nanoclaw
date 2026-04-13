@@ -22,6 +22,8 @@ import { join } from 'path';
 import { createHash } from 'crypto';
 import Database from 'better-sqlite3';
 
+import { todayISO } from './date-utils.js';
+
 const GROUP_FOLDER = process.env.NANOCLAW_GROUP_FOLDER || '';
 const GROUP_DIR = process.env.NANOCLAW_GROUP_DIR || `/workspace/group`;
 
@@ -64,7 +66,7 @@ function trackRecallInContainer(
     }
 
     const queryHash = hashStr(query);
-    const day = new Date().toISOString().slice(0, 10);
+    const day = todayISO();
 
     for (const r of results) {
       const ch = hashStr(r.content);

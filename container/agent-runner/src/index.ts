@@ -21,6 +21,8 @@ import { createHash } from 'crypto';
 import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
+import { todayISO } from './date-utils.js';
+
 interface ContainerInput {
   prompt: string;
   sessionId?: string;
@@ -236,7 +238,7 @@ function createPreCompactHook(assistantName?: string): HookCallback {
       const conversationsDir = '/workspace/group/conversations';
       fs.mkdirSync(conversationsDir, { recursive: true });
 
-      const date = new Date().toISOString().split('T')[0];
+      const date = todayISO();
       const filename = `${date}-${name}.md`;
       const filePath = path.join(conversationsDir, filename);
 
@@ -791,7 +793,7 @@ function activeRecall(userPrompt: string): string | null {
     }
 
     const queryHash = createHash('sha1').update(searchQuery).digest('hex').slice(0, 12);
-    const day = new Date().toISOString().slice(0, 10);
+    const day = todayISO();
 
     for (const r of results) {
       const ch = createHash('sha1').update(r.content).digest('hex').slice(0, 12);
