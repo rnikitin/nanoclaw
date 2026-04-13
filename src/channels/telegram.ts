@@ -6,6 +6,7 @@ import { Api, Bot, InputFile } from 'grammy';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { readEnvFile } from '../env.js';
+import { ensureDir } from '../fs-utils.js';
 import { resolveGroupFolderPath } from '../group-folder.js';
 import { processImage } from '../image.js';
 import { logger } from '../logger.js';
@@ -383,7 +384,7 @@ export class TelegramChannel implements Channel {
 
         const groupDir = resolveGroupFolderPath(group.folder);
         const attachDir = path.join(groupDir, 'attachments');
-        fs.mkdirSync(attachDir, { recursive: true });
+        ensureDir(attachDir);
 
         const localPath = path.join(attachDir, name);
         const res = await fetch(downloadUrl);
@@ -478,7 +479,7 @@ export class TelegramChannel implements Channel {
 
         const groupDir = resolveGroupFolderPath(group.folder);
         const attachDir = path.join(groupDir, 'attachments');
-        fs.mkdirSync(attachDir, { recursive: true });
+        ensureDir(attachDir);
 
         const localPath = path.join(attachDir, name);
         const res = await fetch(downloadUrl);

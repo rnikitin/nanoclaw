@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR } from './config.js';
+import { ensureDir } from './fs-utils.js';
 import { logger } from './logger.js';
 
 interface RemoteControlSession {
@@ -23,7 +24,7 @@ const STDOUT_FILE = path.join(DATA_DIR, 'remote-control.stdout');
 const STDERR_FILE = path.join(DATA_DIR, 'remote-control.stderr');
 
 function saveState(session: RemoteControlSession): void {
-  fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
+  ensureDir(path.dirname(STATE_FILE));
   fs.writeFileSync(STATE_FILE, JSON.stringify(session));
 }
 
@@ -103,7 +104,7 @@ export async function startRemoteControl(
 
   // Redirect stdout/stderr to files so the process has no pipes to the parent.
   // This prevents SIGPIPE when NanoClaw restarts.
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+  ensureDir(DATA_DIR);
   const stdoutFd = fs.openSync(STDOUT_FILE, 'w');
   const stderrFd = fs.openSync(STDERR_FILE, 'w');
 

@@ -15,9 +15,10 @@
  * - Broad query → topic/global level
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join, basename } from 'path';
 
+import { ensureDir } from '../fs-utils.js';
 import { logger } from '../logger.js';
 import type { RecallEntry } from './recall-tracker.js';
 
@@ -68,8 +69,7 @@ export function loadHierarchy(groupDir: string): HierarchyStore {
 
 export function saveHierarchy(groupDir: string, store: HierarchyStore): void {
   const dreamsDir = join(groupDir, '.dreams');
-  if (!existsSync(dreamsDir))
-    mkdirSync(dreamsDir, { recursive: true, mode: 0o777 });
+  if (!existsSync(dreamsDir)) ensureDir(dreamsDir, 0o777);
   store.lastUpdated = new Date().toISOString();
   const path = getStorePath(groupDir);
   writeFileSync(path, JSON.stringify(store, null, 2));

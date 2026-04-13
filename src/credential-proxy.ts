@@ -18,6 +18,7 @@ import { request as httpRequest, RequestOptions } from 'http';
 
 import { DATA_DIR } from './config.js';
 import { readEnvFile } from './env.js';
+import { ensureDir } from './fs-utils.js';
 import { logger } from './logger.js';
 
 const RATE_LIMITS_PATH = path.join(DATA_DIR, 'rate-limits.json');
@@ -51,7 +52,7 @@ function captureRateLimitHeaders(
   }
 
   try {
-    fs.mkdirSync(path.dirname(RATE_LIMITS_PATH), { recursive: true });
+    ensureDir(path.dirname(RATE_LIMITS_PATH));
     fs.writeFileSync(RATE_LIMITS_PATH, JSON.stringify(data));
   } catch (err) {
     logger.warn({ err }, 'Failed to write rate-limits.json');

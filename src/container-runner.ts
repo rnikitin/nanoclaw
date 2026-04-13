@@ -29,6 +29,7 @@ import {
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { readEnvFile } from './env.js';
+import { ensureDir } from './fs-utils.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -177,7 +178,7 @@ export function buildVolumeMounts(
     group.folder,
     '.claude',
   );
-  fs.mkdirSync(groupSessionsDir, { recursive: true });
+  ensureDir(groupSessionsDir);
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
   if (!fs.existsSync(settingsFile)) {
     fs.writeFileSync(
@@ -283,7 +284,7 @@ export function buildVolumeMounts(
   // This prevents cross-group privilege escalation via IPC
   const groupIpcDir = resolveGroupIpcPath(group.folder);
   for (const sub of ['messages', 'tasks', 'input', 'canvas']) {
-    fs.mkdirSync(path.join(groupIpcDir, sub), { recursive: true });
+    ensureDir(path.join(groupIpcDir, sub));
   }
   mounts.push({
     hostPath: groupIpcDir,
@@ -334,8 +335,8 @@ export function buildVolumeMounts(
   );
   const pipCacheDir = path.join(pkgCacheDir, 'pip');
   const npmCacheDir = path.join(pkgCacheDir, 'npm');
-  fs.mkdirSync(pipCacheDir, { recursive: true });
-  fs.mkdirSync(npmCacheDir, { recursive: true });
+  ensureDir(pipCacheDir);
+  ensureDir(npmCacheDir);
   mounts.push(
     {
       hostPath: pipCacheDir,
@@ -497,7 +498,7 @@ export async function runContainerAgent(
   const startTime = Date.now();
 
   const groupDir = resolveGroupFolderPath(group.folder);
-  fs.mkdirSync(groupDir, { recursive: true });
+  ensureDir(groupDir);
 
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
@@ -528,7 +529,7 @@ export async function runContainerAgent(
   );
 
   const logsDir = path.join(groupDir, 'logs');
-  fs.mkdirSync(logsDir, { recursive: true });
+  ensureDir(logsDir);
 
   return new Promise((resolve) => {
     const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
@@ -924,7 +925,7 @@ export function writeTasksSnapshot(
 ): void {
   // Write filtered tasks to the group's IPC directory
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  fs.mkdirSync(groupIpcDir, { recursive: true });
+  ensureDir(groupIpcDir);
 
   // Main sees all tasks, others only see their own
   const filteredTasks = isMain
@@ -954,7 +955,7 @@ export function writeGroupsSnapshot(
   registeredJids: Set<string>,
 ): void {
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
-  fs.mkdirSync(groupIpcDir, { recursive: true });
+  ensureDir(groupIpcDir);
 
   // Main sees all groups; others see nothing (they can't activate groups)
   const visibleGroups = isMain ? groups : [];

@@ -6,9 +6,9 @@
  */
 import Database from 'better-sqlite3';
 import path from 'path';
-import fs from 'fs';
 
 import { STORE_DIR } from './config.js';
+import { ensureDir } from './fs-utils.js';
 
 export interface CanvasSession {
   canvasId: string;
@@ -30,7 +30,7 @@ const cache = new Map<string, CanvasSession>();
 
 export function initCanvasStore(): void {
   const dbPath = path.join(STORE_DIR, 'canvas.db');
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  ensureDir(path.dirname(dbPath));
 
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');

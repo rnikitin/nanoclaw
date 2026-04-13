@@ -9,10 +9,11 @@
  * Relation types: mentions, depends_on, blocks, related_to, decided_by
  */
 
-import { existsSync, readFileSync, readdirSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join, relative, basename } from 'path';
 import Database from 'better-sqlite3';
 
+import { ensureDir } from '../fs-utils.js';
 import { logger } from '../logger.js';
 
 // ─── Types ───────────────────────────────────────────────────
@@ -75,8 +76,7 @@ function openDb(groupDir: string): Database.Database {
   if (cached) return cached;
 
   const dreamsDir = join(groupDir, '.dreams');
-  if (!existsSync(dreamsDir))
-    mkdirSync(dreamsDir, { recursive: true, mode: 0o777 });
+  if (!existsSync(dreamsDir)) ensureDir(dreamsDir, 0o777);
 
   const dbPath = getDbPath(groupDir);
   const db = new Database(dbPath);

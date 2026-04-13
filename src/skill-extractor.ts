@@ -12,6 +12,7 @@ import path from 'path';
 
 import { GROUPS_DIR, CREDENTIAL_PROXY_PORT } from './config.js';
 import { PROXY_BIND_HOST } from './container-runtime.js';
+import { ensureDir } from './fs-utils.js';
 import { logger } from './logger.js';
 import {
   registerAutoSkill,
@@ -235,7 +236,7 @@ function saveSkillToDisk(
     'auto',
     skillName,
   );
-  fs.mkdirSync(skillDir, { recursive: true });
+  ensureDir(skillDir);
 
   // Inject [draft] marker into the frontmatter description
   let content = skillMd;

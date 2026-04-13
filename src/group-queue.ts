@@ -5,6 +5,7 @@ import path from 'path';
 import { AutoCompactReason } from './auto-compact.js';
 import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
 import { stopContainer } from './container-runtime.js';
+import { ensureDir } from './fs-utils.js';
 import { logger } from './logger.js';
 
 interface QueuedTask {
@@ -212,7 +213,7 @@ export class GroupQueue {
 
     const inputDir = path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
     try {
-      fs.mkdirSync(inputDir, { recursive: true });
+      ensureDir(inputDir);
       const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}.json`;
       const filepath = path.join(inputDir, filename);
       const tempPath = `${filepath}.tmp`;
@@ -233,7 +234,7 @@ export class GroupQueue {
 
     const inputDir = path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
     try {
-      fs.mkdirSync(inputDir, { recursive: true });
+      ensureDir(inputDir);
       fs.writeFileSync(path.join(inputDir, '_close'), '');
     } catch {
       // ignore

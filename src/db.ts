@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
+import { ensureDir } from './fs-utils.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -163,7 +164,7 @@ function createSchema(database: Database.Database): void {
 
 export function initDatabase(): void {
   const dbPath = path.join(STORE_DIR, 'messages.db');
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  ensureDir(path.dirname(dbPath));
 
   db = new Database(dbPath);
   createSchema(db);

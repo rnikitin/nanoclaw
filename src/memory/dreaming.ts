@@ -14,7 +14,6 @@ import {
   readFileSync,
   writeFileSync,
   existsSync,
-  mkdirSync,
   readdirSync,
   appendFileSync,
 } from 'fs';
@@ -22,6 +21,7 @@ import { join, basename } from 'path';
 import { logger } from '../logger.js';
 import { CREDENTIAL_PROXY_PORT } from '../config.js';
 import { PROXY_BIND_HOST } from '../container-runtime.js';
+import { ensureDir } from '../fs-utils.js';
 import {
   loadRecallStore,
   saveRecallStore,
@@ -67,8 +67,7 @@ function loadPhaseSignals(groupDir: string): PhaseSignalStore {
 
 function savePhaseSignals(groupDir: string, store: PhaseSignalStore): void {
   const dreamsDir = join(groupDir, '.dreams');
-  if (!existsSync(dreamsDir))
-    mkdirSync(dreamsDir, { recursive: true, mode: 0o777 });
+  if (!existsSync(dreamsDir)) ensureDir(dreamsDir, 0o777);
   store.lastUpdated = new Date().toISOString();
   const path = join(dreamsDir, 'phase-signals.json');
   writeFileSync(path, JSON.stringify(store, null, 2));
@@ -192,8 +191,7 @@ export function lightSleep(groupDir: string): LightSleepResult {
 
   // 5. Write light sleep report
   const reportDir = join(groupDir, '.dreams', 'light-sleep');
-  if (!existsSync(reportDir))
-    mkdirSync(reportDir, { recursive: true, mode: 0o777 });
+  if (!existsSync(reportDir)) ensureDir(reportDir, 0o777);
   const report = {
     phase: 'light',
     timestamp,
@@ -370,8 +368,7 @@ export function remSleep(groupDir: string): RemSleepResult {
 
   // 5. Write REM report
   const reportDir = join(groupDir, '.dreams', 'rem-sleep');
-  if (!existsSync(reportDir))
-    mkdirSync(reportDir, { recursive: true, mode: 0o777 });
+  if (!existsSync(reportDir)) ensureDir(reportDir, 0o777);
   writeFileSync(
     join(reportDir, `${timestamp.slice(0, 10)}.json`),
     JSON.stringify({ phase: 'rem', timestamp, patterns, topicCount }, null, 2),
@@ -463,8 +460,7 @@ export function deepSleep(groupDir: string): DeepSleepResult {
 
   // 5. Write deep sleep report
   const reportDir = join(groupDir, '.dreams', 'deep-sleep');
-  if (!existsSync(reportDir))
-    mkdirSync(reportDir, { recursive: true, mode: 0o777 });
+  if (!existsSync(reportDir)) ensureDir(reportDir, 0o777);
   writeFileSync(
     join(reportDir, `${timestamp.slice(0, 10)}.json`),
     JSON.stringify(
@@ -611,7 +607,7 @@ export function setupGroupDreaming(groupDir: string): void {
   for (const sub of ['', 'light-sleep', 'rem-sleep', 'deep-sleep']) {
     const dir = join(dreamsDir, sub);
     if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true, mode: 0o777 });
+      ensureDir(dir, 0o777);
     }
   }
 

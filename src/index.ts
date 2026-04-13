@@ -61,6 +61,7 @@ import {
   storeChatMetadata,
   storeMessage,
 } from './db.js';
+import { ensureDir } from './fs-utils.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { parseImageReferences } from './image.js';
@@ -160,7 +161,7 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
   setRegisteredGroup(jid, group);
 
   // Create group folder
-  fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
+  ensureDir(path.join(groupDir, 'logs'));
 
   // Seed CLAUDE.md from template if the group folder doesn't have one yet.
   // Agent CWD is /workspace/group; CLAUDE.md must live in the group folder.

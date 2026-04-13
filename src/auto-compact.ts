@@ -15,6 +15,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR } from './config.js';
+import { ensureDir } from './fs-utils.js';
 import { AutoCompactConfig } from './group-models.js';
 
 export type AutoCompactReason = 'idle';
@@ -70,7 +71,7 @@ export function stampLastCompact(
     inputTokensAtFire: inputTokens,
   };
   try {
-    fs.mkdirSync(path.dirname(p), { recursive: true });
+    ensureDir(path.dirname(p));
     fs.writeFileSync(p, JSON.stringify(data));
   } catch {
     // ignore — telemetry is best-effort

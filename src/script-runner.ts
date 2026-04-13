@@ -20,6 +20,7 @@ import {
   ContainerOutput,
 } from './container-runner.js';
 import { CONTAINER_RUNTIME_BIN, stopContainer } from './container-runtime.js';
+import { ensureDir } from './fs-utils.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
@@ -98,7 +99,7 @@ export async function runScriptTask(
   }
 
   const groupDir = resolveGroupFolderPath(group.folder);
-  fs.mkdirSync(groupDir, { recursive: true });
+  ensureDir(groupDir);
 
   const mounts = buildVolumeMounts(group, isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
@@ -120,7 +121,7 @@ export async function runScriptTask(
   );
 
   const logsDir = path.join(groupDir, 'logs');
-  fs.mkdirSync(logsDir, { recursive: true });
+  ensureDir(logsDir);
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   const logFile = path.join(logsDir, `script-${task.id}-${ts}.log`);
   const logStream = fs.createWriteStream(logFile, { flags: 'a' });
@@ -195,7 +196,7 @@ export async function runScriptTask(
               );
               const inputDir = path.join(groupIpcDir, 'input');
               try {
-                fs.mkdirSync(inputDir, { recursive: true });
+                ensureDir(inputDir);
                 fs.writeFileSync(path.join(inputDir, '_close'), '');
               } catch (err) {
                 logger.warn(

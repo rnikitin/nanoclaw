@@ -14,6 +14,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
+import { ensureDir } from './fs-utils.js';
 import { logger } from './logger.js';
 
 export type Effort = 'low' | 'medium' | 'high' | 'max';
@@ -186,7 +187,7 @@ export function upsertGroupEntry(
   if (entry.effort === undefined && entry.model === undefined) return;
 
   try {
-    fs.mkdirSync(path.dirname(CONFIG_PATH), { recursive: true });
+    ensureDir(path.dirname(CONFIG_PATH));
 
     let raw: { defaults?: unknown; groups?: Record<string, unknown> } = {};
     if (fs.existsSync(CONFIG_PATH)) {

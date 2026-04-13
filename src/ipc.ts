@@ -6,6 +6,7 @@ import { CronExpressionParser } from 'cron-parser';
 import { DATA_DIR, GROUPS_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
+import { ensureDir } from './fs-utils.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { Effort, upsertGroupEntry } from './group-models.js';
 import { logger } from './logger.js';
@@ -39,7 +40,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
   ipcWatcherRunning = true;
 
   const ipcBaseDir = path.join(DATA_DIR, 'ipc');
-  fs.mkdirSync(ipcBaseDir, { recursive: true });
+  ensureDir(ipcBaseDir);
 
   const processIpcFiles = async () => {
     // Scan all group IPC directories (identity determined by directory)
@@ -174,7 +175,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 'Error processing IPC message',
               );
               const errorDir = path.join(ipcBaseDir, 'errors');
-              fs.mkdirSync(errorDir, { recursive: true });
+              ensureDir(errorDir);
               fs.renameSync(
                 filePath,
                 path.join(errorDir, `${sourceGroup}-${file}`),
@@ -208,7 +209,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 'Error processing IPC task',
               );
               const errorDir = path.join(ipcBaseDir, 'errors');
-              fs.mkdirSync(errorDir, { recursive: true });
+              ensureDir(errorDir);
               fs.renameSync(
                 filePath,
                 path.join(errorDir, `${sourceGroup}-${file}`),
@@ -272,7 +273,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 'Error processing IPC canvas',
               );
               const errorDir = path.join(ipcBaseDir, 'errors');
-              fs.mkdirSync(errorDir, { recursive: true });
+              ensureDir(errorDir);
               fs.renameSync(
                 filePath,
                 path.join(errorDir, `${sourceGroup}-${file}`),

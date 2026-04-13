@@ -1,6 +1,5 @@
 import { ChildProcess } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
-import fs from 'fs';
 
 import { evaluateGroup, readUsage } from './auto-compact.js';
 import { SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
@@ -17,6 +16,7 @@ import {
   updateTask,
   updateTaskAfterRun,
 } from './db.js';
+import { ensureDir } from './fs-utils.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { resolveGroupAutoCompact } from './group-models.js';
@@ -108,7 +108,7 @@ async function runTask(
     });
     return;
   }
-  fs.mkdirSync(groupDir, { recursive: true });
+  ensureDir(groupDir);
 
   logger.info(
     { taskId: task.id, group: task.group_folder },

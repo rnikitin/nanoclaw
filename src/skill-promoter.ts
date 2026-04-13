@@ -12,6 +12,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { GROUPS_DIR } from './config.js';
+import { ensureDir } from './fs-utils.js';
 import { logger } from './logger.js';
 import {
   getPromotionCandidates,
@@ -57,7 +58,7 @@ function copyToGlobal(sourceGroup: string, skillName: string): string | null {
     return null;
   }
 
-  fs.mkdirSync(dstDir, { recursive: true });
+  ensureDir(dstDir);
   fs.cpSync(srcDir, dstDir, { recursive: true });
 
   // Remove draft marker from the global copy

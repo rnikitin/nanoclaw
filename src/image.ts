@@ -3,6 +3,8 @@ import path from 'path';
 
 import sharp from 'sharp';
 
+import { ensureDir } from './fs-utils.js';
+
 const MAX_DIMENSION = 1024;
 const JPEG_QUALITY = 85;
 
@@ -30,7 +32,7 @@ export async function processImage(
   if (!buffer || buffer.length === 0) return null;
 
   const attachDir = path.join(groupDir, 'attachments');
-  fs.mkdirSync(attachDir, { recursive: true });
+  ensureDir(attachDir);
 
   const filename = `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
   const relativePath = `attachments/${filename}`;
