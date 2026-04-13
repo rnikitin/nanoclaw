@@ -142,23 +142,6 @@ export async function run(args: string[]): Promise<void> {
       }
     }
 
-    // Update .env
-    const envFile = path.join(projectRoot, '.env');
-    if (fs.existsSync(envFile)) {
-      let envContent = fs.readFileSync(envFile, 'utf-8');
-      if (envContent.includes('ASSISTANT_NAME=')) {
-        envContent = envContent.replace(
-          /^ASSISTANT_NAME=.*$/m,
-          `ASSISTANT_NAME="${parsed.assistantName}"`,
-        );
-      } else {
-        envContent += `\nASSISTANT_NAME="${parsed.assistantName}"`;
-      }
-      fs.writeFileSync(envFile, envContent);
-    } else {
-      fs.writeFileSync(envFile, `ASSISTANT_NAME="${parsed.assistantName}"\n`);
-    }
-    logger.info('Set ASSISTANT_NAME in .env');
     nameUpdated = true;
   }
 

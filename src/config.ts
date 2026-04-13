@@ -1,3 +1,5 @@
+import Database from 'better-sqlite3';
+import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
@@ -7,14 +9,8 @@ import { isValidTimezone } from './timezone.js';
 // Read config values from .env (falls back to process.env).
 // Secrets (API keys, tokens) are NOT read here — they are loaded only
 // by the credential proxy (credential-proxy.ts), never exposed to containers.
-const envConfig = readEnvFile([
-  'ASSISTANT_NAME',
-  'ASSISTANT_HAS_OWN_NUMBER',
-  'TZ',
-]);
+const envConfig = readEnvFile(['ASSISTANT_HAS_OWN_NUMBER', 'TZ']);
 
-export const ASSISTANT_NAME =
-  process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Ark';
 export const ASSISTANT_HAS_OWN_NUMBER =
   (process.env.ASSISTANT_HAS_OWN_NUMBER ||
     envConfig.ASSISTANT_HAS_OWN_NUMBER) === 'true';
@@ -70,6 +66,34 @@ export const MAX_CONCURRENT_SCRIPTS = Math.max(
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+// Derive assistant name from the main group's trigger (source of truth).
+// Falls back to 'Ark' when the DB/main-group isn't set up yet (fresh install
+// or setup-in-progress). Opens the sqlite file read-only without going through
+// ./db.js to avoid a circular import.
+function readMainGroupName(): string | null {
+  const dbPath = path.join(STORE_DIR, 'messages.db');
+  if (!fs.existsSync(dbPath)) return null;
+  try {
+    const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    try {
+      const row = db
+        .prepare(
+          `SELECT trigger_pattern FROM registered_groups WHERE is_main = 1 LIMIT 1`,
+        )
+        .get() as { trigger_pattern?: string } | undefined;
+      const trigger = row?.trigger_pattern;
+      if (!trigger) return null;
+      return trigger.replace(/^@/, '').trim() || null;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+export const ASSISTANT_NAME = readMainGroupName() || 'Ark';
 
 export const TRIGGER_PATTERN = new RegExp(
   `^@${escapeRegex(ASSISTANT_NAME)}\\b`,

@@ -331,7 +331,9 @@ Configuration constants are in `src/config.ts`:
 ```typescript
 import path from 'path';
 
-export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || 'Ark';
+// ASSISTANT_NAME is derived from the main group's trigger_pattern
+// (source of truth is registered_groups). Falls back to 'Ark'.
+export const ASSISTANT_NAME = readMainGroupName() || 'Ark';
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
@@ -401,13 +403,7 @@ Only the authentication variables (`CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_API_
 
 ### Changing the Assistant Name
 
-Set the `ASSISTANT_NAME` environment variable:
-
-```bash
-ASSISTANT_NAME=Bot npm start
-```
-
-Or edit the default in `src/config.ts`. This changes:
+Pass `--assistant-name` when running the setup register step — the main group's `trigger_pattern` in `registered_groups` is the single source of truth. This changes:
 - The trigger pattern (messages must start with `@YourName`)
 - The response prefix (`YourName:` added automatically)
 
@@ -679,8 +675,6 @@ When NanoClaw starts, it:
         <string>{{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
         <key>HOME</key>
         <string>{{HOME}}</string>
-        <key>ASSISTANT_NAME</key>
-        <string>Ark</string>
     </dict>
     <key>StandardOutPath</key>
     <string>{{PROJECT_ROOT}}/logs/nanoclaw.log</string>

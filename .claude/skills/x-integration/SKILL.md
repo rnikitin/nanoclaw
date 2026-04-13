@@ -284,7 +284,7 @@ launchctl list | grep nanoclaw  # macOS — should show PID and exit code 0 or -
 
 ## Usage via WhatsApp
 
-Replace `@Assistant` with your configured trigger name (`ASSISTANT_NAME` in `.env`):
+Replace `@Assistant` with your configured trigger name (the main group's `trigger_pattern` in `registered_groups`, defaults to `@Ark`):
 
 ```
 @Assistant post a tweet: Hello world!

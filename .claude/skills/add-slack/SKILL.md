@@ -123,13 +123,13 @@ The channel ID, name, and folder name are needed. Use `npx tsx setup/index.ts --
 For a main channel (responds to all messages):
 
 ```bash
-npx tsx setup/index.ts --step register -- --jid "slack:<channel-id>" --name "<channel-name>" --folder "slack_main" --trigger "@${ASSISTANT_NAME}" --channel slack --no-trigger-required --is-main
+npx tsx setup/index.ts --step register -- --jid "slack:<channel-id>" --name "<channel-name>" --folder "slack_main" --trigger "@Ark" --channel slack --no-trigger-required --is-main
 ```
 
 For additional channels (trigger-only):
 
 ```bash
-npx tsx setup/index.ts --step register -- --jid "slack:<channel-id>" --name "<channel-name>" --folder "slack_<channel-name>" --trigger "@${ASSISTANT_NAME}" --channel slack
+npx tsx setup/index.ts --step register -- --jid "slack:<channel-id>" --name "<channel-name>" --folder "slack_<channel-name>" --trigger "@Ark" --channel slack
 ```
 
 ## Phase 5: Verify

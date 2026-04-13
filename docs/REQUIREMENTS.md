@@ -89,7 +89,7 @@ A personal Claude assistant accessible via WhatsApp, with minimal custom code.
 ### Message Routing
 - A router listens to WhatsApp and routes messages based on configuration
 - Only messages from registered groups are processed
-- Trigger: `@Ark` prefix (case insensitive), configurable via `ASSISTANT_NAME` env var
+- Trigger: `@Ark` prefix (case insensitive), set by the main group's `trigger_pattern` in `registered_groups`
 - Unregistered groups are ignored completely
 
 ### Memory System

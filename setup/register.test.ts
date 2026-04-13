@@ -232,26 +232,4 @@ describe('file templating', () => {
     expect(content).toContain('# C.L.A.U.D.E');
     expect(content).toContain('You are C.L.A.U.D.E.');
   });
-
-  it('updates .env ASSISTANT_NAME line', () => {
-    let envContent = 'SOME_KEY=value\nASSISTANT_NAME="Ark"\nOTHER=test';
-
-    envContent = envContent.replace(
-      /^ASSISTANT_NAME=.*$/m,
-      'ASSISTANT_NAME="Nova"',
-    );
-
-    expect(envContent).toContain('ASSISTANT_NAME="Nova"');
-    expect(envContent).toContain('SOME_KEY=value');
-  });
-
-  it('appends ASSISTANT_NAME to .env if not present', () => {
-    let envContent = 'SOME_KEY=value\n';
-
-    if (!envContent.includes('ASSISTANT_NAME=')) {
-      envContent += '\nASSISTANT_NAME="Nova"';
-    }
-
-    expect(envContent).toContain('ASSISTANT_NAME="Nova"');
-  });
 });
