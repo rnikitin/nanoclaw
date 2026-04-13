@@ -30,11 +30,39 @@ function isValidEntry(entry: unknown): entry is ChatAllowlistEntry {
   return validAllow && validMode;
 }
 
+let cached: {
+  path: string;
+  mtime: number;
+  config: SenderAllowlistConfig;
+} | null = null;
+
 export function loadSenderAllowlist(
   pathOverride?: string,
 ): SenderAllowlistConfig {
   const filePath = pathOverride ?? SENDER_ALLOWLIST_PATH;
 
+  let mtime = 0;
+  try {
+    mtime = fs.statSync(filePath).mtimeMs;
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return DEFAULT_CONFIG;
+    logger.warn(
+      { err, path: filePath },
+      'sender-allowlist: cannot stat config',
+    );
+    return DEFAULT_CONFIG;
+  }
+
+  if (cached && cached.path === filePath && cached.mtime === mtime) {
+    return cached.config;
+  }
+
+  const config = parseConfig(filePath);
+  cached = { path: filePath, mtime, config };
+  return config;
+}
+
+function parseConfig(filePath: string): SenderAllowlistConfig {
   let raw: string;
   try {
     raw = fs.readFileSync(filePath, 'utf-8');
@@ -86,6 +114,11 @@ export function loadSenderAllowlist(
     chats,
     logDenied: obj.logDenied !== false,
   };
+}
+
+/** @internal — test-only reset */
+export function _resetSenderAllowlistCache(): void {
+  cached = null;
 }
 
 function getEntry(

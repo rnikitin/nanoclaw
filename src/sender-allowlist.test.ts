@@ -4,6 +4,7 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  _resetSenderAllowlistCache,
   isSenderAllowed,
   isTriggerAllowed,
   loadSenderAllowlist,
@@ -25,6 +26,7 @@ function writeConfig(config: unknown, name?: string): string {
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'allowlist-test-'));
+  _resetSenderAllowlistCache();
 });
 
 afterEach(() => {
@@ -112,6 +114,40 @@ describe('loadSenderAllowlist', () => {
     const cfg = loadSenderAllowlist(p);
     expect(cfg.chats['good']).toBeDefined();
     expect(cfg.chats['bad']).toBeUndefined();
+  });
+
+  it('caches on repeated reads and invalidates on mtime change', () => {
+    const p = writeConfig({
+      default: { allow: ['alice'], mode: 'trigger' },
+      chats: {},
+    });
+    const spy = vi.spyOn(fs, 'readFileSync');
+    const before = spy.mock.calls.length;
+
+    const a = loadSenderAllowlist(p);
+    const b = loadSenderAllowlist(p);
+    const c = loadSenderAllowlist(p);
+    expect(a.default.allow).toEqual(['alice']);
+    expect(b).toBe(a);
+    expect(c).toBe(a);
+    // Exactly one read despite three calls.
+    expect(spy.mock.calls.length - before).toBe(1);
+
+    // Mutate the file and bump mtime so the cache invalidates.
+    fs.writeFileSync(
+      p,
+      JSON.stringify({
+        default: { allow: ['bob'], mode: 'trigger' },
+        chats: {},
+      }),
+    );
+    const future = new Date(Date.now() + 5000);
+    fs.utimesSync(p, future, future);
+
+    const d = loadSenderAllowlist(p);
+    expect(d.default.allow).toEqual(['bob']);
+    expect(spy.mock.calls.length - before).toBe(2);
+    spy.mockRestore();
   });
 });
 
