@@ -47,7 +47,6 @@ import {
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
-  getAllTasks,
   getLastBotMessageTimestamp,
   getMessagesSince,
   getNewMessages,
@@ -84,9 +83,9 @@ import {
   isSessionCommandAllowed,
 } from './session-commands.js';
 import { stampLastCompact } from './auto-compact.js';
-import { getRunningScriptTaskIds, stopAllScripts } from './script-runner.js';
+import { stopAllScripts } from './script-runner.js';
 import { startSessionCleanup } from './session-cleanup.js';
-import { startSchedulerLoop } from './task-scheduler.js';
+import { buildTaskSnapshotRows, startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
 
@@ -762,23 +761,7 @@ async function runAgent(
   const sessionId = sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
-  const tasks = getAllTasks();
-  const runningIds = getRunningScriptTaskIds();
-  writeTasksSnapshot(
-    group.folder,
-    isMain,
-    tasks.map((t) => ({
-      id: t.id,
-      groupFolder: t.group_folder,
-      prompt: t.prompt,
-      schedule_type: t.schedule_type,
-      schedule_value: t.schedule_value,
-      status: t.status,
-      next_run: t.next_run,
-      execution_mode: t.execution_mode,
-      is_running: runningIds.has(t.id),
-    })),
-  );
+  writeTasksSnapshot(group.folder, isMain, buildTaskSnapshotRows());
 
   // Update available groups snapshot (main group only can see all groups)
   const availableGroups = getAvailableGroups();
@@ -1342,19 +1325,7 @@ async function main(): Promise<void> {
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
     onTasksChanged: (affectedGroupFolder: string) => {
-      const tasks = getAllTasks();
-      const runningIds = getRunningScriptTaskIds();
-      const taskRows = tasks.map((t) => ({
-        id: t.id,
-        groupFolder: t.group_folder,
-        prompt: t.prompt,
-        schedule_type: t.schedule_type,
-        schedule_value: t.schedule_value,
-        status: t.status,
-        next_run: t.next_run,
-        execution_mode: t.execution_mode,
-        is_running: runningIds.has(t.id),
-      }));
+      const taskRows = buildTaskSnapshotRows();
       // Only the affected group + main groups read their snapshot proactively.
       // Non-main groups' snapshots are also regenerated on container spawn
       // (see runAgent), so skipping them here is safe.

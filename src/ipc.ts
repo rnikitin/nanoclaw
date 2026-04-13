@@ -355,7 +355,10 @@ export async function processTaskIpc(
         }
 
         const scheduleType = data.schedule_type as 'cron' | 'interval' | 'once';
-        const nextRun = computeInitialNextRun(scheduleType, data.schedule_value);
+        const nextRun = computeInitialNextRun(
+          scheduleType,
+          data.schedule_value,
+        );
         if (nextRun === null) {
           logger.warn(
             { scheduleType, scheduleValue: data.schedule_value },

@@ -26,7 +26,28 @@ import {
   isScriptRunning,
   runScriptTask,
 } from './script-runner.js';
-import { RegisteredGroup, ScheduledTask } from './types.js';
+import { RegisteredGroup, ScheduledTask, TaskSnapshotRow } from './types.js';
+
+/**
+ * Build the task-row shape that gets written to every group's IPC snapshot.
+ * Shared by runAgent (per-spawn), the scheduler loop, and onTasksChanged,
+ * so the mapping is defined once.
+ */
+export function buildTaskSnapshotRows(): TaskSnapshotRow[] {
+  const tasks = getAllTasks();
+  const runningIds = getRunningScriptTaskIds();
+  return tasks.map((t) => ({
+    id: t.id,
+    groupFolder: t.group_folder,
+    prompt: t.prompt,
+    schedule_type: t.schedule_type,
+    schedule_value: t.schedule_value,
+    status: t.status,
+    next_run: t.next_run,
+    execution_mode: t.execution_mode,
+    is_running: runningIds.has(t.id),
+  }));
+}
 
 /**
  * Compute the initial next_run when a task is first scheduled or its
@@ -171,23 +192,7 @@ async function runTask(
 
   // Update tasks snapshot for container to read (filtered by group)
   const isMain = group.isMain === true;
-  const tasks = getAllTasks();
-  const runningIds = getRunningScriptTaskIds();
-  writeTasksSnapshot(
-    task.group_folder,
-    isMain,
-    tasks.map((t) => ({
-      id: t.id,
-      groupFolder: t.group_folder,
-      prompt: t.prompt,
-      schedule_type: t.schedule_type,
-      schedule_value: t.schedule_value,
-      status: t.status,
-      next_run: t.next_run,
-      execution_mode: t.execution_mode,
-      is_running: runningIds.has(t.id),
-    })),
-  );
+  writeTasksSnapshot(task.group_folder, isMain, buildTaskSnapshotRows());
 
   let result: string | null = null;
   let error: string | null = null;
