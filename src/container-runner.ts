@@ -220,13 +220,22 @@ export function buildVolumeMounts(
     }
   }
 
-  // Sync the shared user-level CLAUDE.md (behavioral guidelines) into each
-  // group's .claude/CLAUDE.md so Claude Code inside the container loads it as
-  // user-level memory. Single source of truth — avoids duplication in every
-  // group CLAUDE.md.
-  const userClaudeSrc = path.join(process.cwd(), 'container', 'user-claude.md');
-  if (fs.existsSync(userClaudeSrc)) {
-    fs.copyFileSync(userClaudeSrc, path.join(groupSessionsDir, 'CLAUDE.md'));
+  // Sync the shared user-level CLAUDE.md (agent service layer + behavioral
+  // guidelines) into each group's .claude/CLAUDE.md so Claude Code inside the
+  // container loads it as user-level memory. agent-tools.md covers the shared
+  // tool/service boilerplate (capabilities, communication, memory, formatting);
+  // user-claude.md covers behavioral guidelines. Group-specific identity and
+  // workflows live in the group's own CLAUDE.md (mounted separately).
+  const parts: string[] = [];
+  for (const src of ['agent-tools.md', 'user-claude.md']) {
+    const srcPath = path.join(process.cwd(), 'container', src);
+    if (fs.existsSync(srcPath)) parts.push(fs.readFileSync(srcPath, 'utf8'));
+  }
+  if (parts.length > 0) {
+    fs.writeFileSync(
+      path.join(groupSessionsDir, 'CLAUDE.md'),
+      parts.join('\n\n'),
+    );
   }
 
   // Sync skills from container/skills/ into each group's .claude/skills/
