@@ -14,6 +14,8 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import Database from 'better-sqlite3';
 
+import { openDb } from '../db-open.js';
+
 // ─── Cache ───────────────────────────────────────────────────
 
 // Read-only DB handles cached per groupDir. Called on every memory_search —
@@ -24,7 +26,7 @@ let exitHandlerRegistered = false;
 function getReadonlyDb(dbPath: string, groupDir: string): Database.Database {
   const cached = dbCache.get(groupDir);
   if (cached) return cached;
-  const db = new Database(dbPath, { readonly: true });
+  const db = openDb(dbPath, { readonly: true });
   dbCache.set(groupDir, db);
   if (!exitHandlerRegistered) {
     process.on('exit', () => {

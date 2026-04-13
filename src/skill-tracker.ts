@@ -10,6 +10,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 
 import { STORE_DIR } from './config.js';
+import { openDb } from './db-open.js';
 import { logger } from './logger.js';
 import { todayISO } from './memory/date-utils.js';
 
@@ -50,8 +51,7 @@ function createSchema(database: Database.Database): void {
 // ─── Init ────────────────────────────────────────────────────────────────────
 
 export function initSkillTracker(): void {
-  db = new Database(DB_PATH);
-  db.pragma('journal_mode = WAL');
+  db = openDb(DB_PATH);
   createSchema(db);
   logger.info('Skill tracker initialized');
 }

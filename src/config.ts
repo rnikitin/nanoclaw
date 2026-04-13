@@ -1,7 +1,7 @@
-import Database from 'better-sqlite3';
 import os from 'os';
 import path from 'path';
 
+import { openDb } from './db-open.js';
 import { readEnvFile } from './env.js';
 import { isValidTimezone } from './timezone.js';
 
@@ -71,13 +71,11 @@ function escapeRegex(str: string): string {
 }
 
 // Derive assistant name from the main group's trigger (source of truth).
-// Falls back to 'Ark' when the DB/main-group isn't set up yet (fresh install
-// or setup-in-progress). Opens the sqlite file read-only without going through
-// ./db.js to avoid a circular import.
+// Falls back to 'Ark' when the DB/main-group isn't set up yet.
 function readMainGroupName(): string | null {
   const dbPath = path.join(STORE_DIR, 'messages.db');
   try {
-    const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    const db = openDb(dbPath, { readonly: true, fileMustExist: true });
     try {
       const row = db
         .prepare(

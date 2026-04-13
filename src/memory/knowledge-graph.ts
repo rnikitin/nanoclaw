@@ -13,6 +13,7 @@ import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join, relative, basename } from 'path';
 import Database from 'better-sqlite3';
 
+import { openDb } from '../db-open.js';
 import { ensureDir } from '../fs-utils.js';
 import { logger } from '../logger.js';
 
@@ -71,16 +72,13 @@ function closeAllHandles(): void {
   dbCache.clear();
 }
 
-function openDb(groupDir: string): Database.Database {
+function getGraphDb(groupDir: string): Database.Database {
   const cached = dbCache.get(groupDir);
   if (cached) return cached;
 
-  const dreamsDir = join(groupDir, '.dreams');
-  if (!existsSync(dreamsDir)) ensureDir(dreamsDir, 0o777);
+  ensureDir(join(groupDir, '.dreams'), 0o777);
 
-  const dbPath = getDbPath(groupDir);
-  const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
+  const db = openDb(getDbPath(groupDir));
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS entities (
@@ -268,7 +266,7 @@ export function buildGraph(groupDir: string): {
   entities: number;
   relations: number;
 } {
-  const db = openDb(groupDir);
+  const db = getGraphDb(groupDir);
   const now = new Date().toISOString();
 
   const extracted = scanGroupFiles(groupDir);
@@ -339,7 +337,7 @@ export function queryEntity(
   groupDir: string,
   entityName: string,
 ): GraphQueryResult | null {
-  const db = openDb(groupDir);
+  const db = getGraphDb(groupDir);
   const entity = db
     .prepare('SELECT * FROM entities WHERE name = ? COLLATE NOCASE')
     .get(entityName) as Entity | undefined;
@@ -420,7 +418,7 @@ export function queryEntity(
  * Find all entities of a given type.
  */
 export function listEntities(groupDir: string, type?: string): Entity[] {
-  const db = openDb(groupDir);
+  const db = getGraphDb(groupDir);
   if (type) {
     return db
       .prepare(
@@ -442,7 +440,7 @@ export function findPath(
   toName: string,
   maxDepth = 3,
 ): string[][] {
-  const db = openDb(groupDir);
+  const db = getGraphDb(groupDir);
   const paths: string[][] = [];
   const visited = new Set<string>();
 
@@ -492,7 +490,7 @@ export function getGraphStats(groupDir: string): {
   if (!existsSync(dbPath)) {
     return { entities: 0, relations: 0, byType: {} };
   }
-  const db = openDb(groupDir);
+  const db = getGraphDb(groupDir);
   const entities = (
     db.prepare('SELECT COUNT(*) as c FROM entities').get() as { c: number }
   ).c;

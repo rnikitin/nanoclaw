@@ -8,7 +8,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 
 import { STORE_DIR } from './config.js';
-import { ensureDir } from './fs-utils.js';
+import { openDb } from './db-open.js';
 
 export interface CanvasSession {
   canvasId: string;
@@ -30,10 +30,7 @@ const cache = new Map<string, CanvasSession>();
 
 export function initCanvasStore(): void {
   const dbPath = path.join(STORE_DIR, 'canvas.db');
-  ensureDir(path.dirname(dbPath));
-
-  db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
+  db = openDb(dbPath);
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS canvases (
