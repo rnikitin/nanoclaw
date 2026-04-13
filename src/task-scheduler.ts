@@ -3,7 +3,7 @@ import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
 import { evaluateGroup, readUsage } from './auto-compact.js';
-import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
+import { SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
 import {
   ContainerOutput,
   runContainerAgent,
@@ -231,7 +231,6 @@ async function runTask(
           chatJid: task.chat_jid,
           isMain,
           isScheduledTask: true,
-          assistantName: ASSISTANT_NAME,
         },
         (proc, containerName) =>
           deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),

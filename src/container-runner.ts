@@ -64,7 +64,6 @@ export interface ContainerInput {
   chatJid: string;
   isMain: boolean;
   isScheduledTask?: boolean;
-  assistantName?: string;
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
   thinkingEnabled?: boolean;
 }

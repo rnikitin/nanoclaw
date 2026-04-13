@@ -784,7 +784,6 @@ async function runAgent(
         groupFolder: group.folder,
         chatJid,
         isMain,
-        assistantName: ASSISTANT_NAME,
         ...(imageAttachments.length > 0 && { imageAttachments }),
         ...(group.containerConfig?.enableThinking && { thinkingEnabled: true }),
       },
