@@ -8,6 +8,8 @@ dist/
 store/
 data/
 logs/
+nanoclaw.db
+nanoclaw.sqlite
 
 # Groups - only track base structure and specific CLAUDE.md files
 groups/*
