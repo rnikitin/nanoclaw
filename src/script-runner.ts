@@ -13,10 +13,7 @@ import {
   CONTAINER_MAX_OUTPUT_SIZE,
   MAX_CONCURRENT_SCRIPTS,
 } from './config.js';
-import {
-  ContainerOutput,
-  parseOutputMarkers,
-} from './container-markers.js';
+import { ContainerOutput, parseOutputMarkers } from './container-markers.js';
 import {
   buildContainerArgs,
   buildVolumeMounts,

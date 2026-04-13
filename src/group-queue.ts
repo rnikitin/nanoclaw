@@ -68,6 +68,28 @@ export class GroupQueue {
     return Array.from(this.groups.keys());
   }
 
+  /**
+   * Drop tracking state for groups that are no longer registered and have no
+   * active container / pending work. Called periodically to keep the map from
+   * growing forever as the user deletes or renames groups. Returns the count
+   * of entries evicted.
+   */
+  sweepUnregistered(activeJids: Set<string>): number {
+    let evicted = 0;
+    for (const [jid, state] of this.groups) {
+      if (activeJids.has(jid)) continue;
+      if (state.active || state.pendingMessages) continue;
+      if (state.pendingTasks.length > 0) continue;
+      if (state.pendingAutoCompact) continue;
+      this.groups.delete(jid);
+      evicted++;
+    }
+    if (evicted > 0) {
+      logger.info({ evicted }, 'GroupQueue swept unregistered entries');
+    }
+    return evicted;
+  }
+
   getLastActivityAt(groupJid: string): number {
     return this.groups.get(groupJid)?.lastActivityAt ?? 0;
   }

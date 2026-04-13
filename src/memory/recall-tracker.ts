@@ -53,6 +53,7 @@ const MAX_QUERY_HASHES = 32;
 const MAX_RECALL_DAYS = 16;
 const MAX_SNIPPET_CHARS = 280;
 const LOCK_TIMEOUT_MS = 60_000;
+const MAX_ENTRY_AGE_DAYS = 30;
 
 function hashString(s: string): string {
   return createHash('sha1').update(s).digest('hex').slice(0, 12);
@@ -180,8 +181,19 @@ export function loadRecallStore(groupDir: string): RecallStore {
   return { version: 1, entries: {}, lastUpdated: new Date().toISOString() };
 }
 
+function pruneOldEntries(store: RecallStore): void {
+  const cutoff = Date.now() - MAX_ENTRY_AGE_DAYS * 24 * 60 * 60 * 1000;
+  for (const [hash, entry] of Object.entries(store.entries)) {
+    const lastMs = new Date(entry.lastRecalled).getTime();
+    if (!isNaN(lastMs) && lastMs < cutoff) {
+      delete store.entries[hash];
+    }
+  }
+}
+
 export function saveRecallStore(groupDir: string, store: RecallStore): void {
   ensureDreamsDir(groupDir);
+  pruneOldEntries(store);
   store.lastUpdated = new Date().toISOString();
   writeDreamsJson(getRecallStorePath(groupDir), store);
 }

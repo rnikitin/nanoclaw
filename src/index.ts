@@ -1338,6 +1338,12 @@ async function main(): Promise<void> {
   });
   startSessionCleanup();
   queue.setProcessMessagesFn(processGroupMessages);
+  // Hourly sweep of GroupQueue state for no-longer-registered JIDs,
+  // so deleted/renamed groups don't accumulate in memory forever.
+  setInterval(
+    () => queue.sweepUnregistered(new Set(Object.keys(registeredGroups))),
+    60 * 60 * 1000,
+  );
   recoverPendingMessages();
   startDreamingScheduler();
   const startLoop = () => {
