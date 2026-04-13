@@ -83,6 +83,18 @@ export interface TaskRunLog {
   error: string | null;
 }
 
+export interface TaskSnapshotRow {
+  id: string;
+  groupFolder: string;
+  prompt: string;
+  schedule_type: ScheduledTask['schedule_type'];
+  schedule_value: string;
+  status: ScheduledTask['status'];
+  next_run: string | null;
+  execution_mode?: ScheduledTask['execution_mode'];
+  is_running?: boolean;
+}
+
 // --- Channel abstraction ---
 
 export interface Channel {

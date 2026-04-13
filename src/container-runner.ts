@@ -31,7 +31,7 @@ import { detectAuthMode } from './credential-proxy.js';
 import { readEnvFile } from './env.js';
 import { ensureDir } from './fs-utils.js';
 import { validateAdditionalMounts } from './mount-security.js';
-import { RegisteredGroup } from './types.js';
+import { RegisteredGroup, TaskSnapshotRow } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -911,17 +911,7 @@ export async function runContainerAgent(
 export function writeTasksSnapshot(
   groupFolder: string,
   isMain: boolean,
-  tasks: Array<{
-    id: string;
-    groupFolder: string;
-    prompt: string;
-    schedule_type: string;
-    schedule_value: string;
-    status: string;
-    next_run: string | null;
-    execution_mode?: string;
-    is_running?: boolean;
-  }>,
+  tasks: TaskSnapshotRow[],
 ): void {
   // Write filtered tasks to the group's IPC directory
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
