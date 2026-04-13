@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@types/ws": "^8.18.1",
-    "better-sqlite3": "^11.8.1",
+    "better-sqlite3": "^12.9.0",
     "cron-parser": "^5.5.0",
     "grammy": "^1.41.1",
     "ioredis": "^5.10.1",
