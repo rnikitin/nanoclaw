@@ -17,93 +17,14 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { execSync } from 'child_process';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { existsSync } from 'fs';
 import { join } from 'path';
-import { createHash } from 'crypto';
 import Database from 'better-sqlite3';
 
-import { todayISO } from './date-utils.js';
+import { trackContainerRecall } from './recall-tracker.js';
 
 const GROUP_FOLDER = process.env.NANOCLAW_GROUP_FOLDER || '';
 const GROUP_DIR = process.env.NANOCLAW_GROUP_DIR || `/workspace/group`;
-
-// ─── Recall Tracking (lightweight inline version for container) ──────
-
-interface RecallEntry {
-  contentHash: string;
-  source: string;
-  recallCount: number;
-  queryHashes: string[];
-  recallDays: string[];
-  conceptTags: string[];
-  avgScore: number;
-  firstSeen: string;
-  lastRecalled: string;
-  snippet: string;
-}
-
-function hashStr(s: string): string {
-  return createHash('sha1').update(s).digest('hex').slice(0, 12);
-}
-
-function trackRecallInContainer(
-  query: string,
-  results: Array<{ source: string; content: string; score: number }>,
-): void {
-  const dreamsDir = join(GROUP_DIR, '.dreams');
-  const storePath = join(dreamsDir, 'short-term-recall.json');
-
-  try {
-    if (!existsSync(dreamsDir)) mkdirSync(dreamsDir, { recursive: true });
-
-    let store: { version: number; entries: Record<string, RecallEntry>; lastUpdated: string };
-    try {
-      store = existsSync(storePath)
-        ? JSON.parse(readFileSync(storePath, 'utf-8'))
-        : { version: 1, entries: {}, lastUpdated: new Date().toISOString() };
-    } catch {
-      store = { version: 1, entries: {}, lastUpdated: new Date().toISOString() };
-    }
-
-    const queryHash = hashStr(query);
-    const day = todayISO();
-
-    for (const r of results) {
-      const ch = hashStr(r.content);
-      if (!store.entries[ch]) {
-        store.entries[ch] = {
-          contentHash: ch,
-          source: r.source,
-          recallCount: 0,
-          queryHashes: [],
-          recallDays: [],
-          conceptTags: [],
-          avgScore: 0,
-          firstSeen: new Date().toISOString(),
-          lastRecalled: new Date().toISOString(),
-          snippet: r.content.slice(0, 280),
-        };
-      }
-      const e = store.entries[ch];
-      e.recallCount++;
-      e.lastRecalled = new Date().toISOString();
-      e.avgScore = ((e.avgScore * (e.recallCount - 1)) + r.score) / e.recallCount;
-      if (!e.queryHashes.includes(queryHash)) {
-        e.queryHashes.push(queryHash);
-        if (e.queryHashes.length > 32) e.queryHashes.shift();
-      }
-      if (!e.recallDays.includes(day)) {
-        e.recallDays.push(day);
-        if (e.recallDays.length > 16) e.recallDays.shift();
-      }
-    }
-
-    store.lastUpdated = new Date().toISOString();
-    writeFileSync(storePath, JSON.stringify(store, null, 2));
-  } catch {
-    // Silently fail — don't break search over tracking issues
-  }
-}
 
 // ─── QMD Availability ───────────────────────────────────────
 
@@ -512,7 +433,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Track recall for dreaming
     const parsed = parseQmdResults(output);
     if (parsed.length > 0) {
-      trackRecallInContainer(query, parsed);
+      trackContainerRecall(GROUP_DIR, query, parsed);
     }
 
     // Augment with knowledge graph — spreading activation from matched entities

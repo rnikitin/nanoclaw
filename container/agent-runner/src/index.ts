@@ -17,11 +17,11 @@
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
-import { createHash } from 'crypto';
 import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
 import { todayISO } from './date-utils.js';
+import { trackContainerRecall } from './recall-tracker.js';
 
 interface ContainerInput {
   prompt: string;
@@ -739,8 +739,6 @@ async function runQuery(
  */
 function activeRecall(userPrompt: string): string | null {
   const groupDir = '/workspace/group';
-  const dreamsDir = path.join(groupDir, '.dreams');
-  const storePath = path.join(dreamsDir, 'short-term-recall.json');
 
   // Extract a short search query from the user's prompt (first 200 chars)
   // Skip very short or generic prompts — not enough signal for meaningful recall
@@ -779,58 +777,8 @@ function activeRecall(userPrompt: string): string | null {
 
   if (results.length === 0) return null;
 
-  // Write to recall store
-  try {
-    if (!fs.existsSync(dreamsDir)) fs.mkdirSync(dreamsDir, { recursive: true });
-
-    let store: { version: number; entries: Record<string, any>; lastUpdated: string };
-    try {
-      store = fs.existsSync(storePath)
-        ? JSON.parse(fs.readFileSync(storePath, 'utf-8'))
-        : { version: 1, entries: {}, lastUpdated: new Date().toISOString() };
-    } catch {
-      store = { version: 1, entries: {}, lastUpdated: new Date().toISOString() };
-    }
-
-    const queryHash = createHash('sha1').update(searchQuery).digest('hex').slice(0, 12);
-    const day = todayISO();
-
-    for (const r of results) {
-      const ch = createHash('sha1').update(r.content).digest('hex').slice(0, 12);
-      if (!store.entries[ch]) {
-        store.entries[ch] = {
-          contentHash: ch,
-          source: r.source,
-          recallCount: 0,
-          queryHashes: [],
-          recallDays: [],
-          conceptTags: [],
-          avgScore: 0,
-          firstSeen: new Date().toISOString(),
-          lastRecalled: new Date().toISOString(),
-          snippet: r.content.slice(0, 280),
-        };
-      }
-      const e = store.entries[ch];
-      e.recallCount++;
-      e.lastRecalled = new Date().toISOString();
-      e.avgScore = ((e.avgScore * (e.recallCount - 1)) + r.score) / e.recallCount;
-      if (!e.queryHashes.includes(queryHash)) {
-        e.queryHashes.push(queryHash);
-        if (e.queryHashes.length > 32) e.queryHashes.shift();
-      }
-      if (!e.recallDays.includes(day)) {
-        e.recallDays.push(day);
-        if (e.recallDays.length > 16) e.recallDays.shift();
-      }
-    }
-
-    store.lastUpdated = new Date().toISOString();
-    fs.writeFileSync(storePath, JSON.stringify(store, null, 2));
-    log(`Active recall: ${results.length} entries tracked for query "${searchQuery.slice(0, 50)}..."`);
-  } catch {
-    // Silently fail — tracking failure doesn't block injection
-  }
+  trackContainerRecall(groupDir, searchQuery, results);
+  log(`Active recall: ${results.length} entries tracked for query "${searchQuery.slice(0, 50)}..."`);
 
   // Format results for prompt injection
   const contextLines = results
