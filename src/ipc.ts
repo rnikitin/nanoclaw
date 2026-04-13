@@ -1,9 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import { CronExpressionParser } from 'cron-parser';
-
-import { DATA_DIR, GROUPS_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
+import { DATA_DIR, GROUPS_DIR, IPC_POLL_INTERVAL } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { ensureDir } from './fs-utils.js';
@@ -11,6 +9,7 @@ import { isValidGroupFolder } from './group-folder.js';
 import { Effort, upsertGroupEntry } from './group-models.js';
 import { logger } from './logger.js';
 import { stopScript } from './script-runner.js';
+import { computeInitialNextRun } from './task-scheduler.js';
 import { RegisteredGroup } from './types.js';
 import { handleCanvasIpc } from './canvas-server.js';
 
@@ -356,41 +355,13 @@ export async function processTaskIpc(
         }
 
         const scheduleType = data.schedule_type as 'cron' | 'interval' | 'once';
-
-        let nextRun: string | null = null;
-        if (scheduleType === 'cron') {
-          try {
-            const interval = CronExpressionParser.parse(data.schedule_value, {
-              tz: TIMEZONE,
-            });
-            nextRun = interval.next().toISOString();
-          } catch {
-            logger.warn(
-              { scheduleValue: data.schedule_value },
-              'Invalid cron expression',
-            );
-            break;
-          }
-        } else if (scheduleType === 'interval') {
-          const ms = parseInt(data.schedule_value, 10);
-          if (isNaN(ms) || ms <= 0) {
-            logger.warn(
-              { scheduleValue: data.schedule_value },
-              'Invalid interval',
-            );
-            break;
-          }
-          nextRun = new Date(Date.now() + ms).toISOString();
-        } else if (scheduleType === 'once') {
-          const date = new Date(data.schedule_value);
-          if (isNaN(date.getTime())) {
-            logger.warn(
-              { scheduleValue: data.schedule_value },
-              'Invalid timestamp',
-            );
-            break;
-          }
-          nextRun = date.toISOString();
+        const nextRun = computeInitialNextRun(scheduleType, data.schedule_value);
+        if (nextRun === null) {
+          logger.warn(
+            { scheduleType, scheduleValue: data.schedule_value },
+            'Invalid schedule',
+          );
+          break;
         }
 
         const taskId =
@@ -529,29 +500,23 @@ export async function processTaskIpc(
 
         // Recompute next_run if schedule changed
         if (data.schedule_type || data.schedule_value) {
-          const updatedTask = {
-            ...task,
-            ...updates,
-          };
-          if (updatedTask.schedule_type === 'cron') {
-            try {
-              const interval = CronExpressionParser.parse(
-                updatedTask.schedule_value,
-                { tz: TIMEZONE },
-              );
-              updates.next_run = interval.next().toISOString();
-            } catch {
+          const updatedTask = { ...task, ...updates };
+          if (
+            updatedTask.schedule_type === 'cron' ||
+            updatedTask.schedule_type === 'interval'
+          ) {
+            const nextRun = computeInitialNextRun(
+              updatedTask.schedule_type,
+              updatedTask.schedule_value,
+            );
+            if (nextRun === null && updatedTask.schedule_type === 'cron') {
               logger.warn(
                 { taskId: data.taskId, value: updatedTask.schedule_value },
                 'Invalid cron in task update',
               );
               break;
             }
-          } else if (updatedTask.schedule_type === 'interval') {
-            const ms = parseInt(updatedTask.schedule_value, 10);
-            if (!isNaN(ms) && ms > 0) {
-              updates.next_run = new Date(Date.now() + ms).toISOString();
-            }
+            if (nextRun !== null) updates.next_run = nextRun;
           }
         }
 

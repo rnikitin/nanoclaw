@@ -29,6 +29,39 @@ import {
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 /**
+ * Compute the initial next_run when a task is first scheduled or its
+ * schedule is changed via IPC. Unlike `computeNextRun` (which anchors
+ * to an existing next_run to prevent drift on recurring intervals),
+ * this variant starts fresh from Date.now() / the once-date.
+ */
+export function computeInitialNextRun(
+  scheduleType: ScheduledTask['schedule_type'],
+  scheduleValue: string,
+): string | null {
+  if (scheduleType === 'cron') {
+    try {
+      const interval = CronExpressionParser.parse(scheduleValue, {
+        tz: TIMEZONE,
+      });
+      return interval.next().toISOString();
+    } catch {
+      return null;
+    }
+  }
+  if (scheduleType === 'interval') {
+    const ms = parseInt(scheduleValue, 10);
+    if (isNaN(ms) || ms <= 0) return null;
+    return new Date(Date.now() + ms).toISOString();
+  }
+  if (scheduleType === 'once') {
+    const date = new Date(scheduleValue);
+    if (isNaN(date.getTime())) return null;
+    return date.toISOString();
+  }
+  return null;
+}
+
+/**
  * Compute the next run time for a recurring task, anchored to the
  * task's scheduled time rather than Date.now() to prevent cumulative
  * drift on interval-based tasks.
