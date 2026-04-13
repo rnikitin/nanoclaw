@@ -137,6 +137,7 @@ function makeDeps(
     }),
     toggleThinking: vi.fn().mockReturnValue(true),
     resetSession: vi.fn(),
+    closeActiveContainer: vi.fn(),
     getUsageReport: vi.fn().mockReturnValue('No usage data yet.'),
     ...overrides,
   };
@@ -341,6 +342,7 @@ describe('handleSessionCommand', () => {
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
+    expect(deps.closeActiveContainer).toHaveBeenCalled();
     expect(deps.resetSession).toHaveBeenCalled();
     expect(deps.sendMessage).toHaveBeenCalledWith('New session started.');
     expect(deps.advanceCursor).toHaveBeenCalledWith('100');

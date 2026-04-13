@@ -64,6 +64,9 @@ export interface SessionCommandDeps {
   toggleThinking: () => boolean;
   /** Clear session so next message starts a fresh conversation. */
   resetSession: () => void;
+  /** Stop any running container for this group (used before resetSession
+   * to prevent a late setSession from the old container undoing the reset). */
+  closeActiveContainer: () => void;
   /** Get formatted usage report from persisted usage data. */
   getUsageReport: () => string;
   /** Check for package updates, rebuild if needed. Returns report string and whether rebuild happened. */
@@ -140,8 +143,10 @@ export async function handleSessionCommand(opts: {
     return { handled: true, success: true };
   }
 
-  // /new: host-only — clear session, no container needed
+  // /new: host-only — clear session. Close any running container first so its
+  // trailing setSession doesn't resurrect the old session ID.
   if (command === '/new') {
+    deps.closeActiveContainer();
     deps.resetSession();
     await deps.sendMessage('New session started.');
     deps.advanceCursor(cmdMsg.timestamp);

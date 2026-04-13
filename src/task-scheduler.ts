@@ -2,6 +2,7 @@ import { ChildProcess } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
+import { evaluateGroup, readUsage } from './auto-compact.js';
 import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
 import {
   ContainerOutput,
@@ -18,8 +19,13 @@ import {
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
+import { resolveGroupAutoCompact } from './group-models.js';
 import { logger } from './logger.js';
-import { getRunningScriptTaskIds, runScriptTask } from './script-runner.js';
+import {
+  getRunningScriptTaskIds,
+  isScriptRunning,
+  runScriptTask,
+} from './script-runner.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
 /**
@@ -297,6 +303,46 @@ async function runTask(
 
 let schedulerRunning = false;
 
+/**
+ * Walk all registered groups, read their usage.json snapshot, and decide
+ * whether to fire an auto-compact. Fires via GroupQueue.queueAutoCompact,
+ * which dedupes via an in-memory flag.
+ */
+function sweepAutoCompact(deps: SchedulerDependencies): void {
+  const groups = deps.registeredGroups();
+  const now = Date.now();
+  for (const [chatJid, group] of Object.entries(groups)) {
+    try {
+      const cfg = resolveGroupAutoCompact(group.folder);
+      if (!cfg.enabled) continue;
+      const usage = readUsage(group.folder);
+      const lastActivityAt = deps.queue.getLastActivityAt(chatJid) || null;
+      const decision = evaluateGroup({
+        usage,
+        lastActivityAt,
+        lastAutoCompactAt: null, // cooldown honored via usage.lastCompact.firedAt
+        cfg,
+        now,
+      });
+      if (!decision.fire || !decision.reason) continue;
+      const queued = deps.queue.queueAutoCompact(chatJid, decision.reason);
+      if (queued) {
+        logger.info(
+          {
+            group: group.name,
+            reason: decision.reason,
+            pct: decision.pct.toFixed(1),
+            inputTokens: decision.inputTokens,
+          },
+          'Auto-compact queued',
+        );
+      }
+    } catch (err) {
+      logger.warn({ chatJid, err }, 'sweepAutoCompact error');
+    }
+  }
+}
+
 export function startSchedulerLoop(deps: SchedulerDependencies): void {
   if (schedulerRunning) {
     logger.debug('Scheduler loop already running, skipping duplicate start');
@@ -320,7 +366,17 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
         }
 
         if (currentTask.execution_mode === 'script') {
-          // Script tasks bypass GroupQueue — spawn independently
+          // Script tasks bypass GroupQueue — spawn independently.
+          // Skip if the previous run is still executing: otherwise runScriptTask's
+          // "already running" guard returns an error, which would be written as
+          // last_result and prematurely advance next_run past the in-flight run.
+          if (isScriptRunning(currentTask.id)) {
+            logger.debug(
+              { taskId: currentTask.id },
+              'Script task still running, skipping scheduler fire',
+            );
+            continue;
+          }
           runTask(currentTask, deps).catch((err) =>
             logger.error({ taskId: currentTask.id, err }, 'Script task error'),
           );
@@ -330,6 +386,8 @@ export function startSchedulerLoop(deps: SchedulerDependencies): void {
           );
         }
       }
+
+      sweepAutoCompact(deps);
     } catch (err) {
       logger.error({ err }, 'Error in scheduler loop');
     }

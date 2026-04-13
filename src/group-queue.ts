@@ -26,6 +26,8 @@ interface GroupState {
   containerName: string | null;
   groupFolder: string | null;
   retryCount: number;
+  lastActivityAt: number;
+  pendingAutoCompact: { reason: 'token' | 'idle'; queuedAt: number } | null;
 }
 
 export class GroupQueue {
@@ -50,10 +52,53 @@ export class GroupQueue {
         containerName: null,
         groupFolder: null,
         retryCount: 0,
+        lastActivityAt: 0,
+        pendingAutoCompact: null,
       };
       this.groups.set(groupJid, state);
     }
     return state;
+  }
+
+  /** Iterate all groups that have been touched by this queue. */
+  getAllGroupJids(): string[] {
+    return Array.from(this.groups.keys());
+  }
+
+  getLastActivityAt(groupJid: string): number {
+    return this.groups.get(groupJid)?.lastActivityAt ?? 0;
+  }
+
+  /** Mark activity for this group (called from message loop on new inbound). */
+  markActivity(groupJid: string): void {
+    this.getGroup(groupJid).lastActivityAt = Date.now();
+  }
+
+  /**
+   * Request an auto-compact for this group. Sets a flag that the message-loop
+   * consumes via consumePendingAutoCompact before calling processGroupMessages.
+   * Dedup: if one is already queued, returns false.
+   */
+  queueAutoCompact(groupJid: string, reason: 'token' | 'idle'): boolean {
+    const state = this.getGroup(groupJid);
+    if (state.pendingAutoCompact) return false;
+    state.pendingAutoCompact = { reason, queuedAt: Date.now() };
+    this.enqueueMessageCheck(groupJid);
+    return true;
+  }
+
+  consumePendingAutoCompact(
+    groupJid: string,
+  ): { reason: 'token' | 'idle'; queuedAt: number } | null {
+    const state = this.groups.get(groupJid);
+    if (!state || !state.pendingAutoCompact) return null;
+    const pending = state.pendingAutoCompact;
+    state.pendingAutoCompact = null;
+    return pending;
+  }
+
+  hasPendingAutoCompact(groupJid: string): boolean {
+    return !!this.groups.get(groupJid)?.pendingAutoCompact;
   }
 
   setProcessMessagesFn(fn: (groupJid: string) => Promise<boolean>): void {

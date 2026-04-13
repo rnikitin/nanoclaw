@@ -75,3 +75,10 @@ export const TRIGGER_PATTERN = new RegExp(
 // Uses system timezone by default
 export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+// Default models — overridden by ANTHROPIC_DEFAULT_*_MODEL in .env
+export const MODEL_DEFAULTS: Record<string, string> = {
+  ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-4-6',
+  ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-6',
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-haiku-4-5-20251001',
+};

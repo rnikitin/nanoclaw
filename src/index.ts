@@ -80,6 +80,7 @@ import {
   handleSessionCommand,
   isSessionCommandAllowed,
 } from './session-commands.js';
+import { stampLastCompact } from './auto-compact.js';
 import { getRunningScriptTaskIds, stopAllScripts } from './script-runner.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
@@ -221,8 +222,11 @@ function formatUsageReport(
         u.contextWindow > 0
           ? ((u.inputTokens / u.contextWindow) * 100).toFixed(1)
           : '?';
+      // Flag non-default context windows so a surprise 1M beta is obvious
+      const cwMarker =
+        u.contextWindow > 200000 ? ` ⚠ ${u.contextWindow / 1000}K beta` : '';
       lines.push(
-        `  ${model}` +
+        `  ${model}${cwMarker}` +
           `\n    Context: ${u.inputTokens.toLocaleString()} / ${u.contextWindow.toLocaleString()} tokens (${pct}%)` +
           `\n    Output: ${u.outputTokens.toLocaleString()} / ${u.maxOutputTokens.toLocaleString()} tokens` +
           (u.cacheReadInputTokens > 0
@@ -326,6 +330,31 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     ASSISTANT_NAME,
   );
 
+  // Consume any pending auto-compact: append a synthetic /compact message so
+  // the existing handleSessionCommand path handles pre-compact processing,
+  // SDK compact, and newSessionId persistence uniformly.
+  const autoCompactPending = queue.consumePendingAutoCompact(chatJid);
+  if (autoCompactPending) {
+    stampLastCompact(group.folder, autoCompactPending.reason);
+    missedMessages.push({
+      id: `autocompact-${Date.now()}`,
+      chat_jid: chatJid,
+      sender: 'system',
+      sender_name: 'system',
+      content: '/compact',
+      timestamp: new Date().toISOString(),
+      is_from_me: true,
+    });
+    logger.info(
+      {
+        group: group.name,
+        reason: autoCompactPending.reason,
+        preCompactCount: missedMessages.length - 1,
+      },
+      'Auto-compact: injecting synthetic /compact',
+    );
+  }
+
   if (missedMessages.length === 0) return true;
 
   // --- Session command interception (before trigger check) ---
@@ -343,6 +372,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       runAgent: (prompt, onOutput) =>
         runAgent(group, prompt, chatJid, [], onOutput),
       closeStdin: () => queue.closeStdin(chatJid),
+      closeActiveContainer: () => queue.closeStdin(chatJid),
       advanceCursor: (ts) => {
         lastAgentTimestamp[chatJid] = ts;
         saveState();
@@ -616,10 +646,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       const usagePath = path.join(DATA_DIR, 'ipc', group.folder, 'usage.json');
       const usage = JSON.parse(fs.readFileSync(usagePath, 'utf-8'));
       numTurns = usage.numTurns;
-    } catch { /* no usage data */ }
+    } catch {
+      /* no usage data */
+    }
 
     extractSkillFromSession(group.folder, numTurns).catch((err) => {
-      logger.debug({ group: group.name, err }, 'Skill extraction failed (non-fatal)');
+      logger.debug(
+        { group: group.name, err },
+        'Skill extraction failed (non-fatal)',
+      );
     });
   }
 
@@ -733,6 +768,66 @@ async function runAgent(
   }
 }
 
+/**
+ * Fast-path host-only session commands so they don't wait behind an active
+ * container in the GroupQueue. Returns true if handled inline.
+ *
+ * Compute the reply synchronously, then fire sendMessage without awaiting.
+ * Awaiting here would stall the entire startMessageLoop on a single slow
+ * Telegram chat — e.g. per-chat flood-wait hanging grammy's HTTP request —
+ * preventing every other group from being polled.
+ */
+function handleHostOnlyInline(
+  cmd: string,
+  cmdMsg: NewMessage,
+  group: RegisteredGroup,
+  channel: Channel,
+  chatJid: string,
+  batchLastTimestamp: string,
+): boolean {
+  if (cmd !== '/usage' && cmd !== '/thinking' && cmd !== '/new') return false;
+  const isMainGroup = group.isMain === true;
+  if (!isSessionCommandAllowed(isMainGroup, !!cmdMsg.is_from_me)) return false;
+
+  let reply: string;
+  try {
+    if (cmd === '/usage') {
+      reply = formatUsageReport(
+        group.folder,
+        group.containerConfig?.enableThinking,
+      );
+    } else if (cmd === '/thinking') {
+      const cfg = group.containerConfig || {};
+      cfg.enableThinking = !cfg.enableThinking;
+      group.containerConfig = cfg;
+      registeredGroups[chatJid] = group;
+      setRegisteredGroup(chatJid, group);
+      reply = `Thinking mode: ${cfg.enableThinking ? 'ON' : 'OFF'}`;
+    } else {
+      // /new: close any running container first — otherwise its tail output
+      // would call setSession with the OLD session ID and undo the reset.
+      queue.closeStdin(chatJid);
+      delete sessions[group.folder];
+      deleteSession(group.folder);
+      reply = 'New session started.';
+    }
+  } catch (err) {
+    logger.warn(
+      { chatJid, cmd, err },
+      'Host-only inline handler failed; falling back to queue',
+    );
+    return false;
+  }
+
+  channel.sendMessage(chatJid, reply).catch((err) =>
+    logger.warn({ chatJid, cmd, err }, 'Host-only inline sendMessage failed'),
+  );
+
+  lastAgentTimestamp[chatJid] = batchLastTimestamp;
+  saveState();
+  return true;
+}
+
 async function startMessageLoop(): Promise<void> {
   if (messageLoopRunning) {
     logger.debug('Message loop already running, skipping duplicate start');
@@ -779,6 +874,8 @@ async function startMessageLoop(): Promise<void> {
             continue;
           }
 
+          queue.markActivity(chatJid);
+
           const isMainGroup = group.isMain === true;
 
           // --- Session command interception (message loop) ---
@@ -792,6 +889,21 @@ async function startMessageLoop(): Promise<void> {
               loopCmdMsg.content,
               TRIGGER_PATTERN,
             );
+            const batchLastTs =
+              groupMessages[groupMessages.length - 1].timestamp;
+            if (
+              cmd &&
+              handleHostOnlyInline(
+                cmd,
+                loopCmdMsg,
+                group,
+                channel,
+                chatJid,
+                batchLastTs,
+              )
+            ) {
+              continue;
+            }
             // Host-only commands that don't need the container — skip closeStdin
             const hostOnlyCommands = new Set([
               '/usage',
@@ -847,6 +959,21 @@ async function startMessageLoop(): Promise<void> {
               pendingCmdMsg.content,
               TRIGGER_PATTERN,
             );
+            const batchLastTs =
+              messagesToSend[messagesToSend.length - 1].timestamp;
+            if (
+              pendingCmd &&
+              handleHostOnlyInline(
+                pendingCmd,
+                pendingCmdMsg,
+                group,
+                channel,
+                chatJid,
+                batchLastTs,
+              )
+            ) {
+              continue;
+            }
             const hostOnly = new Set(['/usage', '/thinking', '/restart']);
             if (
               !hostOnly.has(pendingCmd || '') &&
