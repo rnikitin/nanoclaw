@@ -60,10 +60,7 @@ export async function stopScript(taskId: string): Promise<void> {
   try {
     stopContainer(script.containerName);
   } catch (err) {
-    logger.warn(
-      { taskId, err },
-      'Graceful script stop failed, force killing',
-    );
+    logger.warn({ taskId, err }, 'Graceful script stop failed, force killing');
     script.process.kill('SIGKILL');
   }
 }
