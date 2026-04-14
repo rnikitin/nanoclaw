@@ -663,13 +663,13 @@ describe('register_group success', () => {
   });
 
   it('register_group rejects request with missing fields', async () => {
+    // Deliberately passing malformed payload to exercise runtime validation.
     await processTaskIpc(
       {
         type: 'register_group',
         jid: 'partial@g.us',
         name: 'Partial',
-        // missing folder and trigger
-      },
+      } as Parameters<typeof processTaskIpc>[0],
       'whatsapp_main',
       true,
       deps,

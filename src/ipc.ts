@@ -10,8 +10,42 @@ import { Effort, upsertGroupEntry } from './group-models.js';
 import { logger } from './logger.js';
 import { stopScript } from './script-runner.js';
 import { computeInitialNextRun } from './task-scheduler.js';
-import { RegisteredGroup } from './types.js';
+import { RegisteredGroup, ScheduledTask } from './types.js';
 import { handleCanvasIpc } from './canvas-server.js';
+
+export type TaskIpcMessage =
+  | {
+      type: 'schedule_task';
+      prompt: string;
+      schedule_type: ScheduledTask['schedule_type'];
+      schedule_value: string;
+      context_mode?: ScheduledTask['context_mode'];
+      execution_mode?: ScheduledTask['execution_mode'];
+      targetJid: string;
+      taskId?: string;
+    }
+  | { type: 'pause_task'; taskId: string }
+  | { type: 'resume_task'; taskId: string }
+  | { type: 'cancel_task'; taskId: string }
+  | {
+      type: 'update_task';
+      taskId: string;
+      prompt?: string;
+      schedule_type?: ScheduledTask['schedule_type'];
+      schedule_value?: string;
+    }
+  | { type: 'refresh_groups' }
+  | {
+      type: 'register_group';
+      jid: string;
+      name: string;
+      folder: string;
+      trigger: string;
+      requiresTrigger?: boolean;
+      containerConfig?: RegisteredGroup['containerConfig'];
+      effort?: string;
+      model?: string;
+    };
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
@@ -296,29 +330,9 @@ export function startIpcWatcher(deps: IpcDeps): void {
 }
 
 export async function processTaskIpc(
-  data: {
-    type: string;
-    taskId?: string;
-    prompt?: string;
-    schedule_type?: string;
-    schedule_value?: string;
-    context_mode?: string;
-    execution_mode?: string;
-    groupFolder?: string;
-    chatJid?: string;
-    targetJid?: string;
-    // For register_group
-    jid?: string;
-    name?: string;
-    folder?: string;
-    trigger?: string;
-    requiresTrigger?: boolean;
-    containerConfig?: RegisteredGroup['containerConfig'];
-    effort?: string;
-    model?: string;
-  },
-  sourceGroup: string, // Verified identity from IPC directory
-  isMain: boolean, // Verified from directory path
+  data: TaskIpcMessage,
+  sourceGroup: string,
+  isMain: boolean,
   deps: IpcDeps,
 ): Promise<void> {
   const registeredGroups = deps.registeredGroups();
@@ -332,7 +346,7 @@ export async function processTaskIpc(
         data.targetJid
       ) {
         // Resolve the target group from JID
-        const targetJid = data.targetJid as string;
+        const targetJid = data.targetJid;
         const targetGroupEntry = registeredGroups[targetJid];
 
         if (!targetGroupEntry) {
@@ -354,14 +368,16 @@ export async function processTaskIpc(
           break;
         }
 
-        const scheduleType = data.schedule_type as 'cron' | 'interval' | 'once';
         const nextRun = computeInitialNextRun(
-          scheduleType,
+          data.schedule_type,
           data.schedule_value,
         );
         if (nextRun === null) {
           logger.warn(
-            { scheduleType, scheduleValue: data.schedule_value },
+            {
+              scheduleType: data.schedule_type,
+              scheduleValue: data.schedule_value,
+            },
             'Invalid schedule',
           );
           break;
@@ -381,7 +397,7 @@ export async function processTaskIpc(
           group_folder: targetFolder,
           chat_jid: targetJid,
           prompt: data.prompt,
-          schedule_type: scheduleType,
+          schedule_type: data.schedule_type,
           schedule_value: data.schedule_value,
           context_mode: contextMode,
           execution_mode: executionMode,
@@ -494,10 +510,7 @@ export async function processTaskIpc(
         const updates: Parameters<typeof updateTask>[1] = {};
         if (data.prompt !== undefined) updates.prompt = data.prompt;
         if (data.schedule_type !== undefined)
-          updates.schedule_type = data.schedule_type as
-            | 'cron'
-            | 'interval'
-            | 'once';
+          updates.schedule_type = data.schedule_type;
         if (data.schedule_value !== undefined)
           updates.schedule_value = data.schedule_value;
 
@@ -605,6 +618,9 @@ export async function processTaskIpc(
       break;
 
     default:
-      logger.warn({ type: data.type }, 'Unknown IPC task type');
+      logger.warn(
+        { type: (data as { type: string }).type },
+        'Unknown IPC task type',
+      );
   }
 }
