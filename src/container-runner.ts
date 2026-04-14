@@ -41,9 +41,13 @@ import { RegisteredGroup, TaskSnapshotRow } from './types.js';
 
 /**
  * MD5 of all .ts file contents in a directory. Stable across mtimes so we can
- * detect real source changes and skip no-op syncs.
+ * detect real source changes and skip no-op syncs. Memoized per dir — .ts
+ * files don't mutate after process start.
  */
+const tsHashCache = new Map<string, string>();
 function hashTsDir(dir: string): string {
+  const cached = tsHashCache.get(dir);
+  if (cached) return cached;
   const hash = crypto.createHash('md5');
   function walk(d: string): void {
     for (const name of fs.readdirSync(d).sort()) {
@@ -57,7 +61,9 @@ function hashTsDir(dir: string): string {
     }
   }
   walk(dir);
-  return hash.digest('hex');
+  const digest = hash.digest('hex');
+  tsHashCache.set(dir, digest);
+  return digest;
 }
 
 export interface ContainerInput {
