@@ -86,8 +86,6 @@ export function computeInitialNextRun(
  * Compute the next run time for a recurring task, anchored to the
  * task's scheduled time rather than Date.now() to prevent cumulative
  * drift on interval-based tasks.
- *
- * Co-authored-by: @community-pr-601
  */
 export function computeNextRun(task: ScheduledTask): string | null {
   if (task.schedule_type === 'once') return null;
