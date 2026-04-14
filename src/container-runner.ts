@@ -210,8 +210,11 @@ export function buildVolumeMounts(
           JSON.stringify(existing, null, 2) + '\n',
         );
       }
-    } catch {
-      /* ignore malformed settings */
+    } catch (err) {
+      logger.debug(
+        { err, path: settingsFile },
+        'Failed to parse container settings.json',
+      );
     }
   }
 
@@ -439,8 +442,8 @@ export function buildContainerArgs(
         args.push('-e', `NOTION_ACCESS_TOKEN=${oauth.access_token}`);
       }
     }
-  } catch {
-    /* no notion oauth */
+  } catch (err) {
+    logger.debug({ err, path: notionOAuthFile }, 'Failed to read notion oauth');
   }
 
   // Pass Redis/Postgres connection info for containers that need them

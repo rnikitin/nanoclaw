@@ -106,8 +106,8 @@ function loadState(): void {
   const agentTs = getRouterState('last_agent_timestamp');
   try {
     lastAgentTimestamp = agentTs ? JSON.parse(agentTs) : {};
-  } catch {
-    logger.warn('Corrupted last_agent_timestamp in DB, resetting');
+  } catch (err) {
+    logger.warn({ err }, 'Corrupted last_agent_timestamp in DB, resetting');
     lastAgentTimestamp = {};
   }
   sessions = getAllSessions();
