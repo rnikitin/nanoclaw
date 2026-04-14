@@ -156,12 +156,12 @@ describe('RecallTracker', () => {
           },
         ]);
       }
-      // Low recall candidate
+      // Low recall candidate (still above the 0.5 tracking threshold)
       trackRecall(groupDir, 'single query', [
         {
           source: 'cold.md',
           content: 'rarely recalled cold memory',
-          score: 0.3,
+          score: 0.6,
         },
       ]);
 
@@ -169,6 +169,13 @@ describe('RecallTracker', () => {
       expect(candidates.length).toBe(2);
       expect(candidates[0].source).toBe('hot.md');
       expect(candidates[1].source).toBe('cold.md');
+    });
+
+    it('skips writes with score below 0.5 threshold', () => {
+      trackRecall(groupDir, 'noisy', [
+        { source: 'low.md', content: 'too low to keep', score: 0.3 },
+      ]);
+      expect(getTopRecallCandidates(groupDir, 10)).toHaveLength(0);
     });
 
     it('respects maxAgeDays filter', () => {
@@ -206,7 +213,7 @@ describe('RecallTracker', () => {
       expect(Object.keys(store.entries)).toHaveLength(0);
     });
 
-    it('handles corrupted JSON gracefully', () => {
+    it('handles corrupted legacy JSON gracefully during migration', () => {
       const dreamsDir = join(groupDir, '.dreams');
       require('fs').mkdirSync(dreamsDir, { recursive: true });
       require('fs').writeFileSync(
@@ -217,6 +224,41 @@ describe('RecallTracker', () => {
       const store = loadRecallStore(groupDir);
       expect(store.version).toBe(1);
       expect(Object.keys(store.entries)).toHaveLength(0);
+    });
+
+    it('migrates legacy JSON into sqlite on first open', () => {
+      const dreamsDir = join(groupDir, '.dreams');
+      require('fs').mkdirSync(dreamsDir, { recursive: true });
+      const legacy = {
+        version: 1,
+        lastUpdated: new Date().toISOString(),
+        entries: {
+          abc123def456: {
+            contentHash: 'abc123def456',
+            source: 'legacy.md',
+            recallCount: 4,
+            queryHashes: ['q1', 'q2'],
+            recallDays: ['2026-04-10'],
+            conceptTags: ['legacy'],
+            avgScore: 0.8,
+            firstSeen: new Date().toISOString(),
+            lastRecalled: new Date().toISOString(),
+            snippet: 'from json',
+          },
+        },
+      };
+      require('fs').writeFileSync(
+        join(dreamsDir, 'short-term-recall.json'),
+        JSON.stringify(legacy),
+      );
+
+      const store = loadRecallStore(groupDir);
+      expect(Object.keys(store.entries)).toHaveLength(1);
+      expect(store.entries['abc123def456'].source).toBe('legacy.md');
+      expect(existsSync(join(dreamsDir, 'short-term-recall.json'))).toBe(false);
+      expect(
+        existsSync(join(dreamsDir, 'short-term-recall.json.migrated')),
+      ).toBe(true);
     });
   });
 });

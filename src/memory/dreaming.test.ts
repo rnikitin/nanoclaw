@@ -9,7 +9,7 @@ import {
 } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { trackRecall } from './recall-tracker.js';
+import { trackRecall, loadRecallStore } from './recall-tracker.js';
 import {
   lightSleep,
   remSleep,
@@ -247,28 +247,14 @@ describe('Dreaming', () => {
     });
 
     it('does not overwrite existing data', () => {
-      // Seed some recall data
       trackRecall(groupDir, 'existing query', [
         { source: 'test.md', content: 'existing recall data', score: 0.9 },
       ]);
 
-      const storeBefore = JSON.parse(
-        readFileSync(
-          join(groupDir, '.dreams', 'short-term-recall.json'),
-          'utf-8',
-        ),
-      );
-
+      const storeBefore = loadRecallStore(groupDir);
       setupGroupDreaming(groupDir);
+      const storeAfter = loadRecallStore(groupDir);
 
-      const storeAfter = JSON.parse(
-        readFileSync(
-          join(groupDir, '.dreams', 'short-term-recall.json'),
-          'utf-8',
-        ),
-      );
-
-      // Should NOT have overwritten existing data
       expect(Object.keys(storeAfter.entries)).toHaveLength(
         Object.keys(storeBefore.entries).length,
       );
