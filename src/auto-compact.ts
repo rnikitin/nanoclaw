@@ -17,6 +17,21 @@ import path from 'path';
 import { DATA_DIR } from './config.js';
 import { ensureDir } from './fs-utils.js';
 import { AutoCompactConfig } from './group-models.js';
+import { sanitizeJid } from './jid-utils.js';
+
+/**
+ * Usage telemetry is written per-chatJid by the container runner. Keep the
+ * path compute in one place so all readers/writers agree.
+ */
+export function usageFilePath(groupFolder: string, chatJid: string): string {
+  return path.join(
+    DATA_DIR,
+    'ipc',
+    groupFolder,
+    'usage',
+    `${sanitizeJid(chatJid)}.json`,
+  );
+}
 
 export type AutoCompactReason = 'idle';
 
@@ -38,8 +53,11 @@ interface UsageSnapshot {
   lastCompact?: { firedAt?: number };
 }
 
-export function readUsage(groupFolder: string): UsageSnapshot | null {
-  const p = path.join(DATA_DIR, 'ipc', groupFolder, 'usage.json');
+export function readUsage(
+  groupFolder: string,
+  chatJid: string,
+): UsageSnapshot | null {
+  const p = usageFilePath(groupFolder, chatJid);
   try {
     return JSON.parse(fs.readFileSync(p, 'utf-8'));
   } catch {
@@ -53,9 +71,10 @@ export function readUsage(groupFolder: string): UsageSnapshot | null {
  */
 export function stampLastCompact(
   groupFolder: string,
+  chatJid: string,
   reason: AutoCompactReason | 'manual',
 ): void {
-  const p = path.join(DATA_DIR, 'ipc', groupFolder, 'usage.json');
+  const p = usageFilePath(groupFolder, chatJid);
   let data: Record<string, unknown> = {};
   try {
     data = JSON.parse(fs.readFileSync(p, 'utf-8'));
@@ -126,10 +145,15 @@ export function evaluateGroup(params: {
     return { fire: false, reason: null, pct, inputTokens };
   }
 
+  // Treat the last compact as pseudo-activity so the idle timer restarts
+  // after a compaction — prevents repeated firing on a still-idle group.
+  const effectiveLastActivity =
+    Math.max(lastActivityAt ?? 0, lastCompactFiredAt ?? 0) || null;
+
   if (
-    lastActivityAt &&
+    effectiveLastActivity &&
     inputTokens > 0 &&
-    now - lastActivityAt >= cfg.idleMinutes * 60_000
+    now - effectiveLastActivity >= cfg.idleMinutes * 60_000
   ) {
     return { fire: true, reason: 'idle', pct, inputTokens };
   }

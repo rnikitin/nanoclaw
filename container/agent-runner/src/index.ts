@@ -4,9 +4,10 @@
  *
  * Input protocol:
  *   Stdin: Full ContainerInput JSON (read until EOF, like before)
- *   IPC:   Follow-up messages written as JSON files to /workspace/ipc/input/
+ *   IPC:   Follow-up messages written as JSON files to /workspace/ipc/input/{chatJidSafe}/
  *          Files: {type:"message", text:"..."}.json — polled and consumed
- *          Sentinel: /workspace/ipc/input/_close — signals session end
+ *          Sentinel: /workspace/ipc/input/{chatJidSafe}/_close — signals session end
+ *          Per-chatJid subdir isolates input when multiple containers share a folder.
  *
  * Stdout protocol:
  *   Each result is wrapped in OUTPUT_START_MARKER / OUTPUT_END_MARKER pairs.
@@ -21,6 +22,7 @@ import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-a
 import { fileURLToPath } from 'url';
 
 import { todayISO } from './date-utils.js';
+import { sanitizeJid } from './jid-utils.js';
 import { trackContainerRecall } from './recall-tracker.js';
 
 interface ContainerInput {
@@ -72,10 +74,14 @@ interface SDKUserMessage {
   session_id: string;
 }
 
-const IPC_INPUT_DIR = '/workspace/ipc/input';
+const SANITIZED_CHAT_JID = sanitizeJid(process.env.NANOCLAW_CHAT_JID ?? 'unknown');
+const IPC_INPUT_DIR = `/workspace/ipc/input/${SANITIZED_CHAT_JID}`;
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_MESSAGES_DIR = '/workspace/ipc/messages';
-const USAGE_FILE = '/workspace/ipc/usage.json';
+// Per-chatJid usage.json: two groups sharing a folder (e.g. Telegram + Discord
+// bound to the same identity) must NOT share usage/compact telemetry, otherwise
+// auto-compact fires /compact on a sessionId the other channel never ran.
+const USAGE_FILE = `/workspace/ipc/usage/${SANITIZED_CHAT_JID}.json`;
 
 /** Usage info persisted to disk so the host can read it for /usage. */
 interface UsageData {
@@ -109,6 +115,7 @@ function saveUsageData(data: UsageData): void {
     // no existing file
   }
   try {
+    fs.mkdirSync(path.dirname(USAGE_FILE), { recursive: true });
     fs.writeFileSync(USAGE_FILE, JSON.stringify(merged));
   } catch (err) {
     log(`Failed to write usage file: ${err instanceof Error ? err.message : String(err)}`);

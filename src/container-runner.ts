@@ -19,6 +19,7 @@ import {
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { resolveGroupModel } from './group-models.js';
+import { sanitizeJid } from './jid-utils.js';
 import { logger } from './logger.js';
 import {
   CONTAINER_HOST_GATEWAY,
@@ -88,6 +89,7 @@ interface VolumeMount {
 export function buildVolumeMounts(
   group: RegisteredGroup,
   isMain: boolean,
+  chatJid: string,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
@@ -171,12 +173,17 @@ export function buildVolumeMounts(
     }
   }
 
-  // Per-group Claude sessions directory (isolated from other groups)
-  // Each group gets their own .claude/ to prevent cross-group session access
+  // Per-chatJid Claude sessions directory. Two groups sharing a folder
+  // (e.g. Telegram + Discord bound to the same identity) must NOT share SDK
+  // session state, otherwise auto-compact or parallel turns in one channel
+  // resume the other channel's in-flight session and the reply gets routed
+  // to the wrong chatJid. Keep siblings (agent-runner-src, pkg-cache) at
+  // folder level — those are code/caches, safe to share.
   const groupSessionsDir = path.join(
     DATA_DIR,
     'sessions',
     group.folder,
+    sanitizeJid(chatJid),
     '.claude',
   );
   ensureDir(groupSessionsDir);
@@ -389,6 +396,7 @@ export function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   groupFolder: string,
+  chatJid: string,
 ): string[] {
   const args: string[] = [
     'run',
@@ -401,6 +409,12 @@ export function buildContainerArgs(
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Identity env: the agent-runner reads these at module load to compute
+  // per-chatJid IPC paths (input dir, usage.json). Without them the container
+  // falls back to `unknown` and silently loses follow-up messages.
+  args.push('-e', `NANOCLAW_CHAT_JID=${chatJid}`);
+  args.push('-e', `NANOCLAW_GROUP_FOLDER=${groupFolder}`);
 
   // Route API traffic through the credential proxy (containers never see real secrets)
   args.push(
@@ -504,10 +518,10 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(group.folder);
   ensureDir(groupDir);
 
-  const mounts = buildVolumeMounts(group, input.isMain);
+  const mounts = buildVolumeMounts(group, input.isMain, input.chatJid);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName, group.folder);
+  const containerArgs = buildContainerArgs(mounts, containerName, group.folder, input.chatJid);
 
   logger.debug(
     {

@@ -7,6 +7,7 @@ import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
 import { stopContainer } from './container-runtime.js';
 import { ensureDir } from './fs-utils.js';
 import { writeIpcJsonAtomic } from './ipc-write.js';
+import { sanitizeJid } from './jid-utils.js';
 import { logger } from './logger.js';
 
 interface QueuedTask {
@@ -234,7 +235,13 @@ export class GroupQueue {
       return false;
     state.idleWaiting = false; // Agent is about to receive work, no longer idle
 
-    const inputDir = path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
+    const inputDir = path.join(
+      DATA_DIR,
+      'ipc',
+      state.groupFolder,
+      'input',
+      sanitizeJid(groupJid),
+    );
     return writeIpcJsonAtomic(inputDir, { type: 'message', text }) !== null;
   }
 
@@ -245,7 +252,13 @@ export class GroupQueue {
     const state = this.getGroup(groupJid);
     if (!state.active || !state.groupFolder) return;
 
-    const inputDir = path.join(DATA_DIR, 'ipc', state.groupFolder, 'input');
+    const inputDir = path.join(
+      DATA_DIR,
+      'ipc',
+      state.groupFolder,
+      'input',
+      sanitizeJid(groupJid),
+    );
     try {
       ensureDir(inputDir);
       fs.writeFileSync(path.join(inputDir, '_close'), '');

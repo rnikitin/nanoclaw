@@ -109,6 +109,22 @@ A personal Claude assistant accessible via WhatsApp, with minimal custom code.
 - Bash access is safe because commands run inside the container, not on the host
 - Browser automation via agent-browser with Chromium in the container
 
+### Folder vs chatJid: two-axis scoping
+
+A **folder** is the identity — it holds `CLAUDE.md`, files the agent writes, and the shared skills/pkg cache. Multiple registered groups may share a folder on purpose (e.g. Telegram and Discord both bound to a single "trading-room" identity, or a Discord channel that spawns threads — parent + each thread share the folder).
+
+A **chatJid** is the conversation — `tg:-100...`, `dc:channel-id`, `dc:thread-id`. Each chatJid gets its own container keyed in `GroupQueue`.
+
+Anything that belongs to "who the agent is" is folder-scoped (CLAUDE.md, notes, skills). Anything that belongs to "what this specific conversation is doing" must be chatJid-scoped. The rule when adding IPC state: ask whether two chats bound to the same folder should share it. If no, scope by chatJid.
+
+chatJid-scoped state today:
+- `data/sessions/{folder}/{sanitizedJid}/.claude/` — SDK session state. Sharing would cause `/compact` in one channel to resume the other's in-flight session and answer into the wrong chat.
+- `data/ipc/{folder}/input/{sanitizedJid}/` — host → container follow-up messages. Sharing would let channel B's container pick up channel A's follow-up.
+- `data/ipc/{folder}/usage/{sanitizedJid}.json` — token counters and lastCompact. Sharing would fire auto-compact in a channel that never ran.
+- Canvas IPC and Redis `nanoclaw:canvas` events MUST carry `chatJid` (publisher sets it from `NANOCLAW_CHAT_JID`). There is no folder-based fallback — it would pick an arbitrary sibling.
+
+`sanitizeJid(chatJid)` replaces `:`/`/` with `_` and is defined in `src/jid-utils.ts` and `container/agent-runner/src/jid-utils.ts` (kept in sync).
+
 ### Scheduled Tasks
 - Users can ask Claude to schedule recurring or one-time tasks from any group
 - Tasks run as full agents in the context of the group that created them

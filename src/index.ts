@@ -16,7 +16,7 @@ import {
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
-import { startCanvasServer, setResolveChatJid } from './canvas-server.js';
+import { startCanvasServer } from './canvas-server.js';
 import { initCanvasStore } from './canvas-store.js';
 import {
   startDreamingScheduler,
@@ -82,7 +82,7 @@ import {
   handleSessionCommand,
   isSessionCommandAllowed,
 } from './session-commands.js';
-import { stampLastCompact } from './auto-compact.js';
+import { stampLastCompact, usageFilePath } from './auto-compact.js';
 import { stopAllScripts } from './script-runner.js';
 import { startSessionCleanup } from './session-cleanup.js';
 import { buildTaskSnapshotRows, startSchedulerLoop } from './task-scheduler.js';
@@ -139,6 +139,32 @@ function getOrRecoverCursor(chatJid: string): string {
 function saveState(): void {
   setRouterState('last_timestamp', lastTimestamp);
   setRouterState('last_agent_timestamp', JSON.stringify(lastAgentTimestamp));
+}
+
+/**
+ * Resolve the registered group for a chat JID. If the JID is not a registered
+ * root (e.g. a Discord thread), consult the owning channel for its parent JID
+ * and look up the group under that. This lets thread JIDs inherit the parent
+ * channel's group config (folder, persona, trigger) while keeping their own
+ * session and message cursor.
+ */
+function resolveGroup(chatJid: string): RegisteredGroup | undefined {
+  const direct = registeredGroups[chatJid];
+  if (direct) return direct;
+  const ch = findChannel(channels, chatJid);
+  const parentJid = ch?.getParentJid?.(chatJid);
+  return parentJid ? registeredGroups[parentJid] : undefined;
+}
+
+/**
+ * True if the given chatJid is a child (thread) of a registered group rather
+ * than the registered root itself. Threads bypass the trigger requirement —
+ * any message inside a thread is part of the ongoing conversation.
+ */
+function isThreadJid(chatJid: string): boolean {
+  if (registeredGroups[chatJid]) return false;
+  const ch = findChannel(channels, chatJid);
+  return !!ch?.getParentJid?.(chatJid);
 }
 
 function registerGroup(jid: string, group: RegisteredGroup): void {
@@ -219,9 +245,10 @@ export function _setRegisteredGroups(
  */
 function formatUsageReport(
   groupFolder: string,
+  chatJid: string,
   thinkingEnabled?: boolean,
 ): string {
-  const usagePath = path.join(DATA_DIR, 'ipc', groupFolder, 'usage.json');
+  const usagePath = usageFilePath(groupFolder, chatJid);
   let data: {
     model?: string;
     thinkingEnabled?: boolean;
@@ -378,7 +405,7 @@ function formatUsageReport(
  * Called by the GroupQueue when it's this group's turn.
  */
 async function processGroupMessages(chatJid: string): Promise<boolean> {
-  const group = registeredGroups[chatJid];
+  const group = resolveGroup(chatJid);
   if (!group) return true;
 
   const channel = findChannel(channels, chatJid);
@@ -388,6 +415,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   const isMainGroup = group.isMain === true;
+  const isThread = isThreadJid(chatJid);
 
   const missedMessages = getMessagesSince(
     chatJid,
@@ -401,7 +429,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // SDK compact, and newSessionId persistence uniformly.
   const autoCompactPending = queue.consumePendingAutoCompact(chatJid);
   if (autoCompactPending) {
-    stampLastCompact(group.folder, autoCompactPending.reason);
+    stampLastCompact(group.folder, chatJid, autoCompactPending.reason);
     missedMessages.push({
       id: `autocompact-${Date.now()}`,
       chat_jid: chatJid,
@@ -446,7 +474,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       formatMessages,
       canSenderInteract: (msg) => {
         const hasTrigger = TRIGGER_PATTERN.test(msg.content.trim());
-        const reqTrigger = !isMainGroup && group.requiresTrigger !== false;
+        const reqTrigger =
+          !isMainGroup && !isThread && group.requiresTrigger !== false;
         return (
           isMainGroup ||
           !reqTrigger ||
@@ -558,8 +587,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         };
       },
       resetSession: () => {
-        delete sessions[group.folder];
-        deleteSession(group.folder);
+        delete sessions[chatJid];
+        deleteSession(chatJid);
       },
       toggleThinking: () => {
         const cfg = group.containerConfig || {};
@@ -574,7 +603,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         return cfg.enableThinking!;
       },
       getUsageReport: () =>
-        formatUsageReport(group.folder, group.containerConfig?.enableThinking),
+        formatUsageReport(
+          group.folder,
+          chatJid,
+          group.containerConfig?.enableThinking,
+        ),
     },
   });
   if (cmdResult.handled) {
@@ -587,7 +620,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // --- End session command interception ---
 
   // For non-main groups, check if trigger is required and present
-  if (!isMainGroup && group.requiresTrigger !== false) {
+  // Threads (e.g. Discord threads) bypass the trigger — any message inside
+  // a thread is part of the ongoing conversation.
+  if (!isMainGroup && !isThread && group.requiresTrigger !== false) {
     const allowlistCfg = loadSenderAllowlist();
     const hasTrigger = missedMessages.some(
       (m) =>
@@ -709,7 +744,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (output !== 'error' && !hadError) {
     let numTurns: number | undefined;
     try {
-      const usagePath = path.join(DATA_DIR, 'ipc', group.folder, 'usage.json');
+      const usagePath = usageFilePath(group.folder, chatJid);
       const usage = JSON.parse(fs.readFileSync(usagePath, 'utf-8'));
       numTurns = usage.numTurns;
     } catch {
@@ -755,7 +790,7 @@ async function runAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
-  const sessionId = sessions[group.folder];
+  const sessionId = sessions[chatJid];
 
   // Update tasks snapshot for container to read (filtered by group)
   writeTasksSnapshot(group.folder, isMain, buildTaskSnapshotRows());
@@ -773,8 +808,8 @@ async function runAgent(
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
         if (output.newSessionId) {
-          sessions[group.folder] = output.newSessionId;
-          setSession(group.folder, output.newSessionId);
+          sessions[chatJid] = output.newSessionId;
+          setSession(chatJid, output.newSessionId);
         }
         await onOutput(output);
       }
@@ -798,8 +833,8 @@ async function runAgent(
     );
 
     if (output.newSessionId) {
-      sessions[group.folder] = output.newSessionId;
-      setSession(group.folder, output.newSessionId);
+      sessions[chatJid] = output.newSessionId;
+      setSession(chatJid, output.newSessionId);
     }
 
     if (output.status === 'error') {
@@ -819,8 +854,8 @@ async function runAgent(
           { group: group.name, staleSessionId: sessionId, error: output.error },
           'Stale session detected — clearing for next retry',
         );
-        delete sessions[group.folder];
-        deleteSession(group.folder);
+        delete sessions[chatJid];
+        deleteSession(chatJid);
       }
 
       logger.error(
@@ -863,6 +898,7 @@ function handleHostOnlyInline(
     if (cmd === '/usage') {
       reply = formatUsageReport(
         group.folder,
+        chatJid,
         group.containerConfig?.enableThinking,
       );
     } else if (cmd === '/thinking') {
@@ -876,8 +912,8 @@ function handleHostOnlyInline(
       // /new: close any running container first — otherwise its tail output
       // would call setSession with the OLD session ID and undo the reset.
       queue.closeStdin(chatJid);
-      delete sessions[group.folder];
-      deleteSession(group.folder);
+      delete sessions[chatJid];
+      deleteSession(chatJid);
       reply = 'New session started.';
     }
   } catch (err) {
@@ -910,7 +946,14 @@ async function startMessageLoop(): Promise<void> {
 
   while (true) {
     try {
-      const jids = Object.keys(registeredGroups);
+      // Include registered roots plus any child JIDs (e.g. Discord threads)
+      // whose parent resolves to a registered group. Threads don't register
+      // directly — they inherit group config from their parent channel.
+      const registeredJids = Object.keys(registeredGroups);
+      const childJids = getAllChats()
+        .map((c) => c.jid)
+        .filter((jid) => !registeredGroups[jid] && resolveGroup(jid));
+      const jids = [...registeredJids, ...childJids];
       const { messages, newTimestamp } = getNewMessages(
         jids,
         lastTimestamp,
@@ -936,7 +979,7 @@ async function startMessageLoop(): Promise<void> {
         }
 
         for (const [chatJid, groupMessages] of messagesByGroup) {
-          const group = registeredGroups[chatJid];
+          const group = resolveGroup(chatJid);
           if (!group) continue;
 
           const channel = findChannel(channels, chatJid);
@@ -948,6 +991,7 @@ async function startMessageLoop(): Promise<void> {
           queue.markActivity(chatJid);
 
           const isMainGroup = group.isMain === true;
+          const isThread = isThreadJid(chatJid);
 
           // --- Session command interception (message loop) ---
           // Scan ALL messages in the batch for a session command.
@@ -995,7 +1039,8 @@ async function startMessageLoop(): Promise<void> {
           }
           // --- End session command interception ---
 
-          const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
+          const needsTrigger =
+            !isMainGroup && !isThread && group.requiresTrigger !== false;
           // For non-main groups, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
           // context when a trigger eventually arrives.
@@ -1091,7 +1136,15 @@ async function startMessageLoop(): Promise<void> {
  * Handles crash between advancing lastTimestamp and processing messages.
  */
 function recoverPendingMessages(): void {
-  for (const [chatJid, group] of Object.entries(registeredGroups)) {
+  const registeredJids = Object.keys(registeredGroups);
+  const childJids = getAllChats()
+    .map((c) => c.jid)
+    .filter((jid) => !registeredGroups[jid] && resolveGroup(jid));
+  const jids = [...registeredJids, ...childJids];
+
+  for (const chatJid of jids) {
+    const group = resolveGroup(chatJid);
+    if (!group) continue;
     const pending = getMessagesSince(
       chatJid,
       getOrRecoverCursor(chatJid),
@@ -1100,7 +1153,7 @@ function recoverPendingMessages(): void {
     );
     if (pending.length > 0) {
       logger.info(
-        { group: group.name, pendingCount: pending.length },
+        { group: group.name, chatJid, pendingCount: pending.length },
         'Recovery: found unprocessed messages',
       );
       queue.enqueueMessageCheck(chatJid);
@@ -1132,14 +1185,6 @@ async function main(): Promise<void> {
   // Initialize skill tracker (usage metrics + auto-skill registry)
   initSkillTracker();
   startSkillPromoter();
-
-  // Wire up canvas chatJid resolver
-  setResolveChatJid((group: string) => {
-    for (const [jid, g] of Object.entries(registeredGroups)) {
-      if (g.folder === group) return jid;
-    }
-    return null;
-  });
 
   // Start Canvas HTTP server (web UI ↔ agent interaction)
   const canvasServer = await startCanvasServer().catch((err) => {
@@ -1229,7 +1274,7 @@ async function main(): Promise<void> {
       }
 
       // Sender allowlist drop mode: discard messages from denied senders before storing
-      if (!msg.is_from_me && !msg.is_bot_message && registeredGroups[chatJid]) {
+      if (!msg.is_from_me && !msg.is_bot_message && resolveGroup(chatJid)) {
         const cfg = loadSenderAllowlist();
         if (
           shouldDropMessage(chatJid, cfg) &&

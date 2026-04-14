@@ -66,12 +66,14 @@ def main():
         canvas_id = f"doc-{int(time.time())}-{h}"
 
     group = os.environ.get("NANOCLAW_GROUP_FOLDER", "unknown")
+    chat_jid = os.environ.get("NANOCLAW_CHAT_JID", "")
     redis_url = os.environ.get("REDIS_URL", "redis://host.docker.internal:6379")
 
     msg = json.dumps({
         "canvas_id": canvas_id,
         "action": "create",
         "group": group,
+        "chatJid": chat_jid,
         "title": args.title,
         "jsx": jsx,
         "state": {

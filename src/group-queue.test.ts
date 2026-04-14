@@ -481,4 +481,93 @@ describe('GroupQueue', () => {
     resolveProcess!();
     await vi.advanceTimersByTimeAsync(10);
   });
+
+  // --- Per-chatJid input isolation (regression: shared-folder cross-routing) ---
+
+  it('sendMessage writes into a per-chatJid subdirectory so co-folder containers do not cross-read', async () => {
+    const fs = await import('fs');
+    let resolveProcessA: () => void;
+    let resolveProcessB: () => void;
+
+    const processMessages = vi.fn(async (groupJid: string) => {
+      await new Promise<void>((resolve) => {
+        if (groupJid === 'tg:roman') resolveProcessA = resolve;
+        else resolveProcessB = resolve;
+      });
+      return true;
+    });
+
+    queue.setProcessMessagesFn(processMessages);
+
+    // Two chatJids sharing the same folder — classic NanoClaw setup where
+    // Discord Main and Telegram Roman both live in `telegram_main`.
+    queue.enqueueMessageCheck('tg:roman');
+    queue.enqueueMessageCheck('dc:main');
+    await vi.advanceTimersByTimeAsync(10);
+    queue.registerProcess('tg:roman', {} as any, 'ctr-tg', 'telegram_main');
+    queue.registerProcess('dc:main', {} as any, 'ctr-dc', 'telegram_main');
+
+    const writeFileSync = vi.mocked(fs.default.writeFileSync);
+    writeFileSync.mockClear();
+
+    queue.sendMessage('tg:roman', 'hello-roman');
+    queue.sendMessage('dc:main', 'hello-discord');
+
+    // writeIpcJsonAtomic writes a tmp file then renames; paths carry the
+    // per-chatJid subdir so we can assert isolation from the tmp write alone.
+    const tmpPaths = writeFileSync.mock.calls
+      .map((call) => String(call[0]))
+      .filter((p) => p.endsWith('.tmp'));
+
+    expect(tmpPaths).toHaveLength(2);
+    expect(
+      tmpPaths.some(
+        (p) => p.includes('/telegram_main/input/tg_roman/') && p.endsWith('.tmp'),
+      ),
+    ).toBe(true);
+    expect(
+      tmpPaths.some(
+        (p) => p.includes('/telegram_main/input/dc_main/') && p.endsWith('.tmp'),
+      ),
+    ).toBe(true);
+    expect(
+      tmpPaths.every((p) => !/input\/[^/]+\.tmp$/.test(p)),
+    ).toBe(true); // nothing written directly under input/
+
+    resolveProcessA!();
+    resolveProcessB!();
+    await vi.advanceTimersByTimeAsync(10);
+  });
+
+  it('closeStdin targets the per-chatJid subdirectory', async () => {
+    const fs = await import('fs');
+    let resolveProcess: () => void;
+
+    const processMessages = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        resolveProcess = resolve;
+      });
+      return true;
+    });
+
+    queue.setProcessMessagesFn(processMessages);
+    queue.enqueueMessageCheck('dc:main');
+    await vi.advanceTimersByTimeAsync(10);
+    queue.registerProcess('dc:main', {} as any, 'ctr-dc', 'telegram_main');
+
+    const writeFileSync = vi.mocked(fs.default.writeFileSync);
+    writeFileSync.mockClear();
+
+    queue.closeStdin('dc:main');
+
+    const closeWrites = writeFileSync.mock.calls
+      .map((call) => String(call[0]))
+      .filter((p) => p.endsWith('_close'));
+
+    expect(closeWrites).toHaveLength(1);
+    expect(closeWrites[0]).toContain('/telegram_main/input/dc_main/_close');
+
+    resolveProcess!();
+    await vi.advanceTimersByTimeAsync(10);
+  });
 });

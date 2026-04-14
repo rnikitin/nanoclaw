@@ -309,9 +309,16 @@ nanoclaw/
 │   └── messages.db                # SQLite database (messages, chats, scheduled_tasks, task_run_logs, registered_groups, sessions, router_state)
 │
 ├── data/                          # Application state (gitignored)
-│   ├── sessions/                  # Per-group session data (.claude/ dirs with JSONL transcripts)
+│   ├── sessions/                  # Per-group + per-chatJid SDK state (.claude/ JSONL transcripts)
+│   │   └── {folder}/{sanitizedJid}/.claude/   # Isolated per chatJid — two chats sharing one folder don't share SDK sessions
 │   ├── env/env                    # Copy of .env for container mounting
-│   └── ipc/                       # Container IPC (messages/, tasks/)
+│   └── ipc/                       # Container IPC (see "IPC Layout" below)
+│       └── {folder}/
+│           ├── messages/          # outbound messages (agent → host); chatJid in payload
+│           ├── tasks/             # task IPC (schedule/pause/resume/cancel/register_group)
+│           ├── canvas/            # canvas events; chatJid REQUIRED in payload (no folder fallback)
+│           ├── input/{sanitizedJid}/   # host → container follow-up messages; per-chatJid to keep siblings isolated
+│           └── usage/{sanitizedJid}.json  # token usage + lastCompact telemetry, per-chatJid
 │
 ├── logs/                          # Runtime logs (gitignored)
 │   ├── nanoclaw.log               # Host stdout

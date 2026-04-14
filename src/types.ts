@@ -110,6 +110,10 @@ export interface Channel {
   syncGroups?(force: boolean): Promise<void>;
   // Optional: send a file as an attachment.
   sendFile?(jid: string, filePath: string, caption?: string): Promise<void>;
+  // Optional: returns parent JID when `jid` is a child (e.g. Discord thread).
+  // Null if `jid` is itself a root. Used by the orchestrator to find group
+  // config for thread JIDs that aren't directly registered.
+  getParentJid?(jid: string): string | null;
 }
 
 // Callback type that channels use to deliver inbound messages

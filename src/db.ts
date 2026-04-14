@@ -71,13 +71,13 @@ function createSchema(database: Database.Database): void {
       value TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS sessions (
-      group_folder TEXT PRIMARY KEY,
+      chat_jid TEXT PRIMARY KEY,
       session_id TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS registered_groups (
       jid TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      folder TEXT NOT NULL UNIQUE,
+      folder TEXT NOT NULL,
       trigger_pattern TEXT NOT NULL,
       added_at TEXT NOT NULL,
       container_config TEXT,
@@ -92,6 +92,19 @@ function createSchema(database: Database.Database): void {
     );
   } catch {
     /* column already exists */
+  }
+
+  // Migrate sessions table: group_folder → chat_jid (for per-chat/per-thread sessions)
+  try {
+    database.exec(
+      `ALTER TABLE sessions RENAME COLUMN group_folder TO chat_jid`,
+    );
+    // Backfill: convert surviving folder-keyed rows to their JID
+    database.exec(
+      `UPDATE sessions SET chat_jid = (SELECT jid FROM registered_groups WHERE folder = sessions.chat_jid) WHERE chat_jid IN (SELECT folder FROM registered_groups)`,
+    );
+  } catch {
+    /* column already renamed */
   }
 
   // Add execution_mode column if it doesn't exist (migration for existing DBs)
@@ -551,30 +564,30 @@ export function setRouterState(key: string, value: string): void {
 
 // --- Session accessors ---
 
-export function getSession(groupFolder: string): string | undefined {
+export function getSession(chatJid: string): string | undefined {
   const row = db
-    .prepare('SELECT session_id FROM sessions WHERE group_folder = ?')
-    .get(groupFolder) as { session_id: string } | undefined;
+    .prepare('SELECT session_id FROM sessions WHERE chat_jid = ?')
+    .get(chatJid) as { session_id: string } | undefined;
   return row?.session_id;
 }
 
-export function setSession(groupFolder: string, sessionId: string): void {
+export function setSession(chatJid: string, sessionId: string): void {
   db.prepare(
-    'INSERT OR REPLACE INTO sessions (group_folder, session_id) VALUES (?, ?)',
-  ).run(groupFolder, sessionId);
+    'INSERT OR REPLACE INTO sessions (chat_jid, session_id) VALUES (?, ?)',
+  ).run(chatJid, sessionId);
 }
 
-export function deleteSession(groupFolder: string): void {
-  db.prepare('DELETE FROM sessions WHERE group_folder = ?').run(groupFolder);
+export function deleteSession(chatJid: string): void {
+  db.prepare('DELETE FROM sessions WHERE chat_jid = ?').run(chatJid);
 }
 
 export function getAllSessions(): Record<string, string> {
   const rows = db
-    .prepare('SELECT group_folder, session_id FROM sessions')
-    .all() as Array<{ group_folder: string; session_id: string }>;
+    .prepare('SELECT chat_jid, session_id FROM sessions')
+    .all() as Array<{ chat_jid: string; session_id: string }>;
   const result: Record<string, string> = {};
   for (const row of rows) {
-    result[row.group_folder] = row.session_id;
+    result[row.chat_jid] = row.session_id;
   }
   return result;
 }

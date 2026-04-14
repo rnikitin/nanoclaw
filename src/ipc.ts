@@ -189,7 +189,6 @@ async function drainCanvas(
   deps: IpcDeps,
   ipcBaseDir: string,
 ): Promise<void> {
-  const registeredGroups = deps.registeredGroups();
   const canvasDir = path.join(ipcBaseDir, sourceGroup, 'canvas');
   if (!fs.existsSync(canvasDir)) return;
 
@@ -199,17 +198,21 @@ async function drainCanvas(
     try {
       const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
       if (data.canvas_id && data.action) {
-        let chatJid = data.chatJid || '';
+        // chatJid must be set by the publisher (container reads NANOCLAW_CHAT_JID).
+        // Folder-based fallback misroutes in shared-folder setups (Telegram + Discord
+        // bound to one folder) — the URL ends up in whichever channel Object.entries
+        // happens to iterate first.
+        const chatJid: string = data.chatJid || '';
         if (!chatJid) {
-          for (const [jid, group] of Object.entries(registeredGroups)) {
-            if (group.folder === sourceGroup) {
-              chatJid = jid;
-              break;
-            }
-          }
+          logger.warn(
+            { canvas_id: data.canvas_id, action: data.action, sourceGroup },
+            'Canvas IPC missing chatJid — dropping (publisher must set NANOCLAW_CHAT_JID)',
+          );
+          fs.unlinkSync(filePath);
+          continue;
         }
         const result = handleCanvasIpc(sourceGroup, chatJid, data);
-        if (result.url && chatJid) {
+        if (result.url) {
           const host = process.env.CANVAS_HOST || 'ark.nikitin.me';
           const url = `https://${host}${result.url}`;
           await deps
@@ -219,7 +222,7 @@ async function drainCanvas(
             );
         }
         logger.info(
-          { canvas_id: data.canvas_id, action: data.action, sourceGroup },
+          { canvas_id: data.canvas_id, action: data.action, sourceGroup, chatJid },
           'Canvas IPC processed',
         );
       }

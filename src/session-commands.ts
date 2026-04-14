@@ -282,11 +282,12 @@ export async function handleSessionCommand(opts: {
   // Forward the literal slash command as the prompt (no XML formatting)
   await deps.setTyping(true);
 
+  const isAutoCompact = cmdMsg.sender === 'system';
   let hadCmdError = false;
   const cmdOutput = await deps.runAgent(command, async (result) => {
     if (result.status === 'error') hadCmdError = true;
     const text = resultToText(result.result);
-    if (text) await deps.sendMessage(text);
+    if (text && !isAutoCompact) await deps.sendMessage(text);
   });
 
   // Advance cursor to the command — messages AFTER it remain pending for next poll.

@@ -6,6 +6,8 @@ Personal Claude assistant. See [README.md](README.md) for philosophy and setup. 
 
 Single Node.js process with skill-based channel system. Channels (WhatsApp, Telegram, Slack, Discord, Gmail) are skills that self-register at startup. Messages route to Claude Agent SDK running in containers (Linux VMs). Each group has isolated filesystem and memory.
 
+**Folder vs chatJid (important):** a `folder` is the agent's identity (CLAUDE.md, files, skills — shareable between channels). A `chatJid` is the conversation (one container per chatJid in `GroupQueue`). SDK sessions, IPC input, and usage telemetry are scoped per-chatJid under `data/sessions/{folder}/{sanitizedJid}/.claude/`, `data/ipc/{folder}/input/{sanitizedJid}/`, `data/ipc/{folder}/usage/{sanitizedJid}.json`. When adding new IPC state, scope per-chatJid if two chats sharing a folder shouldn't share it. Canvas IPC always carries `chatJid` — no folder fallback. See `docs/REQUIREMENTS.md` → "Folder vs chatJid".
+
 ## Key Files
 
 | File | Purpose |
@@ -18,6 +20,8 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 | `src/container-runner.ts` | Spawns agent containers with mounts |
 | `src/task-scheduler.ts` | Runs scheduled tasks |
 | `src/db.ts` | SQLite operations |
+| `src/jid-utils.ts` | `sanitizeJid()` — shared with container (replace `:`/`/` → `_`) |
+| `src/auto-compact.ts` | Auto-compact decision + `usageFilePath(folder, chatJid)` |
 | `src/transcription.ts` | Voice transcription via OpenAI Whisper API |
 | `src/skill-promoter.ts` | Auto-skill lifecycle: draft → local → global |
 | `src/memory/dreaming.ts` | 3-phase dreaming engine (light/REM/deep) |

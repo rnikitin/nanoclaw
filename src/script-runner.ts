@@ -22,6 +22,7 @@ import {
 import { CONTAINER_RUNTIME_BIN, stopContainer } from './container-runtime.js';
 import { ensureDir } from './fs-utils.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
+import { sanitizeJid } from './jid-utils.js';
 import { logger } from './logger.js';
 import { RegisteredGroup, ScheduledTask } from './types.js';
 
@@ -97,10 +98,10 @@ export async function runScriptTask(
   const groupDir = resolveGroupFolderPath(group.folder);
   ensureDir(groupDir);
 
-  const mounts = buildVolumeMounts(group, isMain);
+  const mounts = buildVolumeMounts(group, isMain, task.chat_jid);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-script-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName, group.folder);
+  const containerArgs = buildContainerArgs(mounts, containerName, group.folder, task.chat_jid);
 
   const input: ContainerInput = {
     prompt: task.prompt,
@@ -181,7 +182,11 @@ export async function runScriptTask(
                 { taskId: task.id },
                 'Writing _close for script container after result',
               );
-              const inputDir = path.join(groupIpcDir, 'input');
+              const inputDir = path.join(
+                groupIpcDir,
+                'input',
+                sanitizeJid(task.chat_jid),
+              );
               try {
                 ensureDir(inputDir);
                 fs.writeFileSync(path.join(inputDir, '_close'), '');

@@ -315,9 +315,7 @@ export function loadRecallStore(groupDir: string): RecallStore {
   };
   try {
     const db = openRecallDb(groupDir);
-    const rows = db
-      .prepare('SELECT * FROM recall_entries')
-      .all() as RawRow[];
+    const rows = db.prepare('SELECT * FROM recall_entries').all() as RawRow[];
     const entries: Record<string, RecallEntry> = {};
     for (const r of rows) entries[r.content_hash] = rowToEntry(r);
     return { version: 1, entries, lastUpdated: new Date().toISOString() };

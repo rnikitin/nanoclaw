@@ -96,7 +96,9 @@ describe('IPC watcher', () => {
     });
 
     await waitUntil(() => sentMessages.length >= 1);
-    expect(sentMessages).toEqual([{ jid: 'peer@g.us', text: 'hello from main' }]);
+    expect(sentMessages).toEqual([
+      { jid: 'peer@g.us', text: 'hello from main' },
+    ]);
 
     const remaining = readdirSync(
       join(dataDir, 'ipc', 'mainfolder', 'messages'),
@@ -160,9 +162,7 @@ describe('IPC watcher', () => {
     });
 
     await waitUntil(() => {
-      const files = readdirSync(
-        join(dataDir, 'ipc', 'peerfolder', 'messages'),
-      );
+      const files = readdirSync(join(dataDir, 'ipc', 'peerfolder', 'messages'));
       return files.length === 0;
     }, 2000);
 

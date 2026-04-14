@@ -198,7 +198,7 @@ async function runTask(
   // For group context mode, use the group's current session
   const sessions = deps.getSessions();
   const sessionId =
-    task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
+    task.context_mode === 'group' ? sessions[task.chat_jid] : undefined;
 
   if (task.execution_mode === 'script') {
     // Script mode: bypass GroupQueue, no timeout, independent container
@@ -350,8 +350,8 @@ function sweepAutoCompact(deps: SchedulerDependencies): void {
     try {
       const cfg = resolveGroupAutoCompact(group.folder);
       if (!cfg.enabled) continue;
-      const usage = readUsage(group.folder);
       const lastActivityAt = deps.queue.getLastActivityAt(chatJid) || null;
+      const usage = readUsage(group.folder, chatJid);
       const decision = evaluateGroup({
         usage,
         lastActivityAt,

@@ -32,17 +32,11 @@ import {
 export const CANVAS_PORT = parseInt(process.env.CANVAS_PORT || '3002', 10);
 export const CANVAS_REDIS_CHANNEL = 'nanoclaw:canvas';
 
-// Resolve chatJid from group folder when not provided
-let _resolveChatJid: ((group: string) => string | null) | null = null;
-export function setResolveChatJid(fn: (group: string) => string | null): void {
-  _resolveChatJid = fn;
-}
-function resolveChatJidForGroup(group: string): string {
-  if (_resolveChatJid) {
-    return _resolveChatJid(group) || '';
-  }
-  return '';
-}
+// chatJid resolution: all canvas IPC must carry chatJid set by the publisher
+// (container-side skill reads NANOCLAW_CHAT_JID). Folder-based fallback was
+// removed: it misroutes in shared-folder setups (Telegram + Discord bound to
+// one folder) because Object.entries yields the first matching JID, not the
+// originating one.
 
 // Canvas token for auth — set CANVAS_TOKEN in .env
 function getCanvasToken(): string {
@@ -106,22 +100,40 @@ export function handleCanvasIpc(
       logger.warn({ canvas_id }, 'Canvas create without JSX');
       return {};
     }
-    // Resolve chatJid from group if not provided
-    const resolvedJid = chatJid || resolveChatJidForGroup(group);
+    if (!chatJid) {
+      logger.warn(
+        { canvas_id, group },
+        'Canvas create without chatJid — dropping',
+      );
+      return {};
+    }
+    // Preserve existing state when re-creating (e.g. agent updating JSX only).
+    // Existing state wins; payload.state only adds new keys.
+    const existing = getCanvas(canvas_id);
+    const mergedState = existing
+      ? { ...(payload.state || {}), ...existing.state }
+      : payload.state || {};
+    const title = payload.title || existing?.title || 'Canvas';
+    if (existing) {
+      logger.warn(
+        { canvas_id },
+        'Canvas create on existing ID: preserving state',
+      );
+    }
     createCanvas(
       canvas_id,
       group,
-      resolvedJid,
-      payload.title || 'Canvas',
+      chatJid,
+      title,
       payload.jsx,
-      payload.state || {},
+      mergedState,
     );
     broadcastToCanvas(canvas_id, {
       type: 'create',
       canvas_id,
       jsx: payload.jsx,
-      state: payload.state || {},
-      title: payload.title || 'Canvas',
+      state: mergedState,
+      title,
     });
     const url = `/canvas/${group}/${canvas_id}`;
     logger.info({ canvas_id, group, url }, 'Canvas created');
@@ -481,13 +493,25 @@ export function startCanvasServer(port = CANVAS_PORT): Promise<Server> {
             const session = getCanvas(msg.canvas_id);
             if (!session) return;
 
-            // Resolve chatJid if empty
-            const chatJid =
-              session.chatJid || resolveChatJidForGroup(session.group);
+            // Optimistically persist 'save' events — don't wait for agent echo.
+            // Prevents data loss if agent is slow, crashes, or re-creates the canvas.
+            if (
+              msg.event === 'save' &&
+              msg.data &&
+              typeof msg.data === 'object'
+            ) {
+              updateCanvas(
+                msg.canvas_id,
+                undefined,
+                msg.data as Record<string, unknown>,
+              );
+            }
+
+            const chatJid = session.chatJid;
             if (!chatJid) {
               logger.warn(
                 { canvas_id: msg.canvas_id },
-                'Canvas event dropped: no chatJid',
+                'Canvas event dropped: session has no chatJid',
               );
               return;
             }
