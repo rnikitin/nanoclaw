@@ -78,9 +78,7 @@ async function drainMessages(
   const messagesDir = path.join(ipcBaseDir, sourceGroup, 'messages');
   if (!fs.existsSync(messagesDir)) return;
 
-  const files = fs
-    .readdirSync(messagesDir)
-    .filter((f) => f.endsWith('.json'));
+  const files = fs.readdirSync(messagesDir).filter((f) => f.endsWith('.json'));
   for (const file of files) {
     const filePath = path.join(messagesDir, file);
     try {
@@ -153,10 +151,7 @@ async function drainMessages(
       }
       fs.unlinkSync(filePath);
     } catch (err) {
-      logger.error(
-        { file, sourceGroup, err },
-        'Error processing IPC message',
-      );
+      logger.error({ file, sourceGroup, err }, 'Error processing IPC message');
       const errorDir = path.join(ipcBaseDir, 'errors');
       ensureDir(errorDir);
       fs.renameSync(filePath, path.join(errorDir, `${sourceGroup}-${file}`));
@@ -230,10 +225,7 @@ async function drainCanvas(
       }
       fs.unlinkSync(filePath);
     } catch (err) {
-      logger.error(
-        { file, sourceGroup, err },
-        'Error processing IPC canvas',
-      );
+      logger.error({ file, sourceGroup, err }, 'Error processing IPC canvas');
       const errorDir = path.join(ipcBaseDir, 'errors');
       ensureDir(errorDir);
       fs.renameSync(filePath, path.join(errorDir, `${sourceGroup}-${file}`));
@@ -241,20 +233,25 @@ async function drainCanvas(
   }
 }
 
-export function startIpcWatcher(deps: IpcDeps): void {
+export function startIpcWatcher(
+  deps: IpcDeps,
+  opts: { dataDir?: string } = {},
+): () => void {
   if (ipcWatcherRunning) {
     logger.debug('IPC watcher already running, skipping duplicate start');
-    return;
+    return () => {};
   }
   ipcWatcherRunning = true;
 
-  const ipcBaseDir = path.join(DATA_DIR, 'ipc');
+  const ipcBaseDir = path.join(opts.dataDir ?? DATA_DIR, 'ipc');
   ensureDir(ipcBaseDir);
 
   const groupWatchers = new Map<string, fs.FSWatcher[]>();
   const dirtyGroups = new Set<string>();
   let drainScheduled = false;
   let draining = false;
+  let baseWatcher: fs.FSWatcher | null = null;
+  let safetyNetInterval: NodeJS.Timeout | null = null;
 
   const getFolderIsMain = (): Map<string, boolean> => {
     const m = new Map<string, boolean>();
@@ -285,12 +282,11 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 'Error reading IPC messages directory',
               ),
           );
-          await drainTasks(sourceGroup, isMain, deps, ipcBaseDir).catch(
-            (err) =>
-              logger.error(
-                { err, sourceGroup },
-                'Error reading IPC tasks directory',
-              ),
+          await drainTasks(sourceGroup, isMain, deps, ipcBaseDir).catch((err) =>
+            logger.error(
+              { err, sourceGroup },
+              'Error reading IPC tasks directory',
+            ),
           );
           await drainCanvas(sourceGroup, deps, ipcBaseDir).catch((err) =>
             logger.error(
@@ -364,7 +360,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
 
   // Base watcher: pick up new group directories as they appear.
   try {
-    const baseWatcher = fs.watch(ipcBaseDir, (_event, filename) => {
+    baseWatcher = fs.watch(ipcBaseDir, (_event, filename) => {
       if (!filename || filename === 'errors') return;
       const full = path.join(ipcBaseDir, filename);
       try {
@@ -389,7 +385,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
   // Safety net: catches missed inotify events (rare, but happen on rapid
   // rename / fs drivers that coalesce). Also picks up groups whose
   // watchers failed to attach. 30s cadence vs the old 1s polling.
-  setInterval(() => {
+  safetyNetInterval = setInterval(() => {
     try {
       for (const f of fs.readdirSync(ipcBaseDir)) {
         if (f === 'errors') continue;
@@ -406,10 +402,32 @@ export function startIpcWatcher(deps: IpcDeps): void {
     } catch (err) {
       logger.error({ err }, 'IPC safety-net sweep failed');
     }
-  }, SAFETY_NET_INTERVAL).unref();
+  }, SAFETY_NET_INTERVAL);
+  safetyNetInterval.unref();
 
   scheduleDrain();
   logger.info('IPC watcher started (fs.watch + 30s safety net)');
+
+  return () => {
+    baseWatcher?.close();
+    baseWatcher = null;
+    for (const watchers of groupWatchers.values()) {
+      for (const w of watchers) {
+        try {
+          w.close();
+        } catch {
+          /* already closed */
+        }
+      }
+    }
+    groupWatchers.clear();
+    if (safetyNetInterval) {
+      clearInterval(safetyNetInterval);
+      safetyNetInterval = null;
+    }
+    dirtyGroups.clear();
+    ipcWatcherRunning = false;
+  };
 }
 
 export async function processTaskIpc(
