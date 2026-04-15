@@ -584,6 +584,14 @@ async function runQuery(
   let lastKeepaliveAt = 0;
   const KEEPALIVE_INTERVAL_MS = 60_000;
 
+  // When the SDK auto-compacts mid-turn it emits compact_boundary then a
+  // `result` (turn ends). Without intervention the user sees only the partial
+  // pre-compact response. Track the boundary and auto-push a continuation
+  // prompt so the model resumes in the same runQuery call.
+  let pendingCompactResume = false;
+  let compactResumesUsed = 0;
+  const MAX_COMPACT_RESUMES = 3;
+
   // Load global CLAUDE.md as additional system context (shared across all groups)
   const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
   let globalClaudeMd: string | undefined;
@@ -709,6 +717,16 @@ async function runQuery(
       }
     }
 
+    if (message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary') {
+      const meta = (message as { compact_metadata?: { trigger?: string } }).compact_metadata;
+      log(`Compact boundary observed (trigger=${meta?.trigger || 'unknown'})`);
+      if (compactResumesUsed < MAX_COMPACT_RESUMES) {
+        pendingCompactResume = true;
+      } else {
+        log(`Max compact resumes (${MAX_COMPACT_RESUMES}) reached, skipping auto-continue`);
+      }
+    }
+
     if (message.type === 'result') {
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
@@ -731,6 +749,16 @@ async function runQuery(
       if (r.num_turns != null) usageData.numTurns = r.num_turns;
       if (r.duration_ms != null) usageData.durationMs = r.duration_ms;
       saveUsageData(usageData);
+
+      if (pendingCompactResume) {
+        pendingCompactResume = false;
+        compactResumesUsed++;
+        log(`Auto-continuing after compact (resume ${compactResumesUsed}/${MAX_COMPACT_RESUMES})`);
+        stream.push(
+          'Продолжи ответ с того места, где он был прерван авто-компактом. ' +
+          'Не извиняйся, не пересказывай начало — просто продолжай.',
+        );
+      }
     }
   }
 

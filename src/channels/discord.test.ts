@@ -144,7 +144,10 @@ function createMessage(overrides: {
     parentId?: string;
   };
   // Stub for message.startThread — tests can inspect the created thread.
-  startThread?: (opts: { name: string; autoArchiveDuration?: number }) => Promise<any>;
+  startThread?: (opts: {
+    name: string;
+    autoArchiveDuration?: number;
+  }) => Promise<any>;
 }) {
   const channelId = overrides.channelId ?? '1234567890123456';
   const authorId = overrides.authorId ?? '55512345';
@@ -720,8 +723,11 @@ describe('DiscordChannel', () => {
 
       await channel.sendMessage('dc:1234567890123456', 'Hello');
 
-      const fetchedChannel = await currentClient().channels.fetch('1234567890123456');
-      expect(currentClient().channels.fetch).toHaveBeenCalledWith('1234567890123456');
+      const fetchedChannel =
+        await currentClient().channels.fetch('1234567890123456');
+      expect(currentClient().channels.fetch).toHaveBeenCalledWith(
+        '1234567890123456',
+      );
     });
 
     it('strips dc: prefix from JID', async () => {

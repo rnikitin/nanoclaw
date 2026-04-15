@@ -522,17 +522,17 @@ describe('GroupQueue', () => {
     expect(tmpPaths).toHaveLength(2);
     expect(
       tmpPaths.some(
-        (p) => p.includes('/telegram_main/input/tg_roman/') && p.endsWith('.tmp'),
+        (p) =>
+          p.includes('/telegram_main/input/tg_roman/') && p.endsWith('.tmp'),
       ),
     ).toBe(true);
     expect(
       tmpPaths.some(
-        (p) => p.includes('/telegram_main/input/dc_main/') && p.endsWith('.tmp'),
+        (p) =>
+          p.includes('/telegram_main/input/dc_main/') && p.endsWith('.tmp'),
       ),
     ).toBe(true);
-    expect(
-      tmpPaths.every((p) => !/input\/[^/]+\.tmp$/.test(p)),
-    ).toBe(true); // nothing written directly under input/
+    expect(tmpPaths.every((p) => !/input\/[^/]+\.tmp$/.test(p))).toBe(true); // nothing written directly under input/
 
     resolveProcessA!();
     resolveProcessB!();

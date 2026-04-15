@@ -5,7 +5,9 @@ import { sanitizeJid } from './jid-utils.js';
 describe('sanitizeJid', () => {
   it('replaces colons in Telegram/Discord chatJids', () => {
     expect(sanitizeJid('tg:47319110')).toBe('tg_47319110');
-    expect(sanitizeJid('dc:1493529373901590598')).toBe('dc_1493529373901590598');
+    expect(sanitizeJid('dc:1493529373901590598')).toBe(
+      'dc_1493529373901590598',
+    );
   });
 
   it('replaces path separators and other unsafe chars', () => {

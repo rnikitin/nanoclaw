@@ -194,7 +194,10 @@ export class DiscordChannel implements Channel {
       const threadName = (content.trim().slice(0, 50) || senderName).trim();
       let threadJid: string;
       try {
-        if (!('startThread' in message) || typeof message.startThread !== 'function') {
+        if (
+          !('startThread' in message) ||
+          typeof message.startThread !== 'function'
+        ) {
           logger.warn({ chatJid }, 'Discord channel does not support threads');
           return;
         }

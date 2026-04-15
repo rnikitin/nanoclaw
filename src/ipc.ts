@@ -222,7 +222,12 @@ async function drainCanvas(
             );
         }
         logger.info(
-          { canvas_id: data.canvas_id, action: data.action, sourceGroup, chatJid },
+          {
+            canvas_id: data.canvas_id,
+            action: data.action,
+            sourceGroup,
+            chatJid,
+          },
           'Canvas IPC processed',
         );
       }

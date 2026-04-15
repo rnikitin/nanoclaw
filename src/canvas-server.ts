@@ -120,14 +120,7 @@ export function handleCanvasIpc(
         'Canvas create on existing ID: preserving state',
       );
     }
-    createCanvas(
-      canvas_id,
-      group,
-      chatJid,
-      title,
-      payload.jsx,
-      mergedState,
-    );
+    createCanvas(canvas_id, group, chatJid, title, payload.jsx, mergedState);
     broadcastToCanvas(canvas_id, {
       type: 'create',
       canvas_id,
