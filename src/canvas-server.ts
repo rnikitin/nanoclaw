@@ -1,14 +1,13 @@
 /**
  * Canvas Server — WebSocket + HTTP endpoint for interactive agent UIs.
  *
- * Agents create canvases by writing JSX code + state via IPC.
- * Browsers connect via WebSocket, receive JSX to render, and send
- * user events back to the agent.
+ * Wire format: AG-UI protocol (github.com/ag-ui-protocol/ag-ui).
+ * Server emits: RunStarted → Custom(nanoclaw.canvas.render) → RunFinished
+ * for create/update; Custom(nanoclaw.canvas.close) for close.
+ * Browser sends: Custom(nanoclaw.canvas.interaction|subscribe|ping).
  *
- * Flow:
- *   Agent → IPC canvas create {jsx, state} → browser renders React
- *   User clicks → WS event → storeMessageDirect → agent processes
- *   Agent → IPC canvas update {state} → WS push → browser re-renders
+ * Snapshot-only — every render carries full jsx+state (no StateDelta).
+ * IPC agent↔host shape is unchanged (internal); AG-UI is the WS contract.
  */
 import { createServer, Server, IncomingMessage, ServerResponse } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -25,9 +24,9 @@ import {
   updateCanvas,
   getCanvas,
   deleteCanvas,
-  cleanupExpiredCanvases,
   CanvasSession,
 } from './canvas-store.js';
+import { runChain, ChainContext } from './canvas-middleware.js';
 
 export const CANVAS_PORT = parseInt(process.env.CANVAS_PORT || '3002', 10);
 export const CANVAS_REDIS_CHANNEL = 'nanoclaw:canvas';
@@ -47,6 +46,141 @@ function getCanvasToken(): string {
 // Track WebSocket connections per canvas
 const canvasSubscribers = new Map<string, Set<WebSocket>>();
 
+// --- AG-UI event helpers ---
+
+function newRunId(): string {
+  return `run-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+}
+
+function agUiRenderEvents(session: CanvasSession): unknown[] {
+  const runId = newRunId();
+  const threadId = session.chatJid || session.canvasId;
+  return [
+    { type: 'RunStarted', threadId, runId },
+    {
+      type: 'Custom',
+      threadId,
+      runId,
+      name: 'nanoclaw.canvas.render',
+      value: {
+        canvasId: session.canvasId,
+        title: session.title,
+        jsx: session.jsx,
+        state: session.state,
+      },
+    },
+    { type: 'RunFinished', threadId, runId },
+  ];
+}
+
+function sendAgUiRender(ws: WebSocket, session: CanvasSession): void {
+  if (ws.readyState !== WebSocket.OPEN) return;
+  for (const ev of agUiRenderEvents(session)) {
+    ws.send(JSON.stringify(ev));
+  }
+}
+
+async function broadcastAgUiRender(
+  session: CanvasSession,
+  depth = 0,
+): Promise<void> {
+  const subs = canvasSubscribers.get(session.canvasId);
+  // Still run outbound middleware even with zero subscribers so side-effects
+  // (e.g. audit log, state persistence) fire on every publish.
+  const runId = newRunId();
+  const threadId = session.chatJid || session.canvasId;
+
+  const chainCtx: ChainContext = {
+    group: session.group,
+    canvasId: session.canvasId,
+    direction: 'outbound',
+    depth,
+  };
+  const result = await runChain(chainCtx, {
+    name: 'nanoclaw.canvas.render',
+    value: {
+      canvasId: session.canvasId,
+      title: session.title,
+      jsx: session.jsx,
+      state: session.state,
+    },
+    threadId,
+    runId,
+  });
+
+  if (result.sideEffectState) {
+    const updated = updateCanvas(
+      session.canvasId,
+      undefined,
+      result.sideEffectState,
+    );
+    if (updated) {
+      await broadcastAgUiRender(updated, depth + 1);
+      return;
+    }
+  }
+
+  if (result.stopped) return;
+
+  const finalEvent = result.event as {
+    name: string;
+    value: unknown;
+  };
+  const events: unknown[] = [
+    { type: 'RunStarted', threadId, runId },
+    {
+      type: 'Custom',
+      threadId,
+      runId,
+      name: finalEvent.name,
+      value: finalEvent.value,
+    },
+    { type: 'RunFinished', threadId, runId },
+  ];
+
+  if (!subs || subs.size === 0) return;
+  for (const ws of subs) {
+    if (ws.readyState !== WebSocket.OPEN) continue;
+    for (const ev of events) ws.send(JSON.stringify(ev));
+  }
+}
+
+async function broadcastAgUiClose(
+  canvasId: string,
+  group?: string,
+  chatJid?: string,
+): Promise<void> {
+  const subs = canvasSubscribers.get(canvasId);
+  const runId = newRunId();
+  const threadId = chatJid || canvasId;
+
+  if (group) {
+    const result = await runChain(
+      { group, canvasId, direction: 'outbound', depth: 0 },
+      {
+        name: 'nanoclaw.canvas.close',
+        value: { canvasId },
+        threadId,
+        runId,
+      },
+    );
+    if (result.stopped) return;
+  }
+
+  if (!subs || subs.size === 0) return;
+  const closeEvent = {
+    type: 'Custom',
+    threadId,
+    runId,
+    name: 'nanoclaw.canvas.close',
+    value: { canvasId },
+  };
+  const data = JSON.stringify(closeEvent);
+  for (const ws of subs) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(data);
+  }
+}
+
 function addSubscriber(canvasId: string, ws: WebSocket): void {
   let subs = canvasSubscribers.get(canvasId);
   if (!subs) {
@@ -64,25 +198,10 @@ function removeSubscriber(ws: WebSocket): void {
 }
 
 /**
- * Broadcast a message to all browsers watching a canvas.
- */
-export function broadcastToCanvas(canvasId: string, message: unknown): void {
-  const subs = canvasSubscribers.get(canvasId);
-  if (!subs || subs.size === 0) return;
-
-  const data = JSON.stringify(message);
-  for (const ws of subs) {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(data);
-    }
-  }
-}
-
-/**
  * Handle a canvas IPC message from an agent.
  * Called by the IPC watcher when it finds files in /workspace/ipc/canvas/.
  */
-export function handleCanvasIpc(
+export async function handleCanvasIpc(
   group: string,
   chatJid: string,
   payload: {
@@ -92,7 +211,7 @@ export function handleCanvasIpc(
     jsx?: string;
     state?: Record<string, unknown>;
   },
-): { url?: string } {
+): Promise<{ url?: string }> {
   const { canvas_id, action } = payload;
 
   if (action === 'create') {
@@ -107,27 +226,27 @@ export function handleCanvasIpc(
       );
       return {};
     }
-    // Preserve existing state when re-creating (e.g. agent updating JSX only).
-    // Existing state wins; payload.state only adds new keys.
+    // Re-publish semantics: payload keys overwrite existing ones so new
+    // state.markdown / fields actually land. Keys the payload omits carry
+    // over from existing state (matters for stateful canvases like games
+    // where agent re-publishes JSX without touching user-driven state).
     const existing = getCanvas(canvas_id);
     const mergedState = existing
-      ? { ...(payload.state || {}), ...existing.state }
+      ? { ...existing.state, ...(payload.state || {}) }
       : payload.state || {};
     const title = payload.title || existing?.title || 'Canvas';
     if (existing) {
-      logger.warn(
-        { canvas_id },
-        'Canvas create on existing ID: preserving state',
-      );
+      logger.info({ canvas_id }, 'Canvas re-published');
     }
-    createCanvas(canvas_id, group, chatJid, title, payload.jsx, mergedState);
-    broadcastToCanvas(canvas_id, {
-      type: 'create',
+    const session = createCanvas(
       canvas_id,
-      jsx: payload.jsx,
-      state: mergedState,
+      group,
+      chatJid,
       title,
-    });
+      payload.jsx,
+      mergedState,
+    );
+    await broadcastAgUiRender(session);
     const url = `/canvas/${group}/${canvas_id}`;
     logger.info({ canvas_id, group, url }, 'Canvas created');
     return { url };
@@ -139,20 +258,14 @@ export function handleCanvasIpc(
       logger.warn({ canvas_id }, 'Canvas update for unknown canvas');
       return {};
     }
-    const msg: Record<string, unknown> = {
-      type: 'update',
-      canvas_id,
-    };
-    if (payload.jsx) msg.jsx = payload.jsx;
-    if (payload.state) msg.state = payload.state;
-    broadcastToCanvas(canvas_id, msg);
+    await broadcastAgUiRender(session);
     return {};
   }
 
   if (action === 'close') {
+    const existing = getCanvas(canvas_id);
     deleteCanvas(canvas_id);
-    broadcastToCanvas(canvas_id, { type: 'close', canvas_id });
-    // Clean up subscribers
+    await broadcastAgUiClose(canvas_id, existing?.group, existing?.chatJid);
     canvasSubscribers.delete(canvas_id);
     logger.info({ canvas_id }, 'Canvas closed');
     return {};
@@ -437,81 +550,103 @@ export function startCanvasServer(port = CANVAS_PORT): Promise<Server> {
 
       if (canvasId) {
         addSubscriber(canvasId, ws);
-
-        // Send current state if canvas exists
         const session = getCanvas(canvasId);
-        if (session) {
-          ws.send(
-            JSON.stringify({
-              type: 'create',
-              canvas_id: canvasId,
-              jsx: session.jsx,
-              state: session.state,
-              title: session.title,
-            }),
-          );
-        }
+        if (session) sendAgUiRender(ws, session);
       }
 
-      ws.on('message', (raw) => {
+      ws.on('message', async (raw) => {
         try {
           const msg = JSON.parse(raw.toString());
 
-          if (msg.type === 'ping') {
-            ws.send(JSON.stringify({ type: 'pong' }));
+          // AG-UI: client sends Custom events with nanoclaw.canvas.* names.
+          if (msg.type !== 'Custom' || typeof msg.name !== 'string') return;
+          const value = msg.value || {};
+
+          if (msg.name === 'nanoclaw.canvas.ping') {
+            ws.send(
+              JSON.stringify({
+                type: 'Custom',
+                name: 'nanoclaw.canvas.pong',
+                value: {},
+              }),
+            );
             return;
           }
 
-          if (msg.type === 'subscribe' && msg.canvas_id) {
-            // Late subscription
+          if (msg.name === 'nanoclaw.canvas.subscribe' && value.canvasId) {
             removeSubscriber(ws);
-            addSubscriber(msg.canvas_id, ws);
-            const session = getCanvas(msg.canvas_id);
-            if (session) {
-              ws.send(
-                JSON.stringify({
-                  type: 'create',
-                  canvas_id: msg.canvas_id,
-                  jsx: session.jsx,
-                  state: session.state,
-                  title: session.title,
-                }),
-              );
-            }
+            addSubscriber(value.canvasId, ws);
+            const session = getCanvas(value.canvasId);
+            if (session) sendAgUiRender(ws, session);
             return;
           }
 
-          if (msg.type === 'event' && msg.canvas_id) {
-            // User event from browser → inject as message for agent
-            const session = getCanvas(msg.canvas_id);
+          if (msg.name === 'nanoclaw.canvas.interaction' && value.canvasId) {
+            const session = getCanvas(value.canvasId);
             if (!session) return;
+
+            // Run inbound middleware chain. Handlers can intercept
+            // (return next:false) or modify value, and may push state
+            // updates back via sideEffect.state.
+            const chainResult = await runChain(
+              {
+                group: session.group,
+                canvasId: value.canvasId,
+                direction: 'inbound',
+                depth: 0,
+              },
+              {
+                name: 'nanoclaw.canvas.interaction',
+                eventType:
+                  typeof value.event === 'string' ? value.event : undefined,
+                value,
+                threadId: session.chatJid,
+              },
+            );
+
+            if (chainResult.sideEffectState) {
+              const updated = updateCanvas(
+                value.canvasId,
+                undefined,
+                chainResult.sideEffectState,
+              );
+              if (updated) {
+                await broadcastAgUiRender(updated, 1);
+              }
+            }
+
+            if (chainResult.stopped) return; // middleware fully handled it
+
+            const finalValue =
+              (chainResult.event as { value?: Record<string, unknown> })
+                ?.value ?? value;
 
             // Optimistically persist 'save' events — don't wait for agent echo.
             // Prevents data loss if agent is slow, crashes, or re-creates the canvas.
             if (
-              msg.event === 'save' &&
-              msg.data &&
-              typeof msg.data === 'object'
+              finalValue.event === 'save' &&
+              finalValue.data &&
+              typeof finalValue.data === 'object'
             ) {
               updateCanvas(
-                msg.canvas_id,
+                value.canvasId,
                 undefined,
-                msg.data as Record<string, unknown>,
+                finalValue.data as Record<string, unknown>,
               );
             }
 
             const chatJid = session.chatJid;
             if (!chatJid) {
               logger.warn(
-                { canvas_id: msg.canvas_id },
+                { canvas_id: value.canvasId },
                 'Canvas event dropped: session has no chatJid',
               );
               return;
             }
 
             const eventId = `canvas-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
-            const dataStr = JSON.stringify(msg.data || {});
-            const content = `<canvas-event canvas_id="${msg.canvas_id}" type="${msg.event || 'interaction'}">\n${dataStr}\n</canvas-event>`;
+            const dataStr = JSON.stringify(finalValue.data || {});
+            const content = `<canvas-event canvas_id="${value.canvasId}" type="${finalValue.event || 'interaction'}">\n${dataStr}\n</canvas-event>`;
 
             storeMessageDirect({
               id: eventId,
@@ -538,16 +673,8 @@ export function startCanvasServer(port = CANVAS_PORT): Promise<Server> {
       });
     });
 
-    // Periodic cleanup
-    const cleanupInterval = setInterval(() => {
-      const expired = cleanupExpiredCanvases();
-      for (const id of expired) {
-        broadcastToCanvas(id, { type: 'close', canvas_id: id });
-        canvasSubscribers.delete(id);
-      }
-    }, 60_000);
-
-    server.on('close', () => clearInterval(cleanupInterval));
+    // Canvases are persistent — no TTL eviction. Explicit close via
+    // action=close is the only delete path.
 
     // --- Redis pub/sub for fast canvas updates from agents ---
     try {
@@ -582,10 +709,15 @@ export function startCanvasServer(port = CANVAS_PORT): Promise<Server> {
               const data = JSON.parse(message);
               if (!data.canvas_id || !data.action) return;
 
-              // Process same as IPC
+              // Process same as IPC — fire-and-forget; errors logged in handler
               const chatJid = data.chatJid || '';
               const group = data.group || '';
-              handleCanvasIpc(group, chatJid, data);
+              handleCanvasIpc(group, chatJid, data).catch((err) => {
+                logger.warn(
+                  { err, canvas_id: data.canvas_id },
+                  'Canvas Redis handler failed',
+                );
+              });
             } catch (err) {
               logger.debug({ err }, 'Invalid canvas Redis message');
             }

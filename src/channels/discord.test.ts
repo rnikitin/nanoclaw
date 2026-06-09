@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  beforeEach,
+  vi,
+  afterEach,
+} from 'vitest';
 
 // --- Mocks ---
 
@@ -92,7 +100,15 @@ vi.mock('discord.js', () => {
   // Mock TextChannel type
   class TextChannel {}
 
+  class AttachmentBuilder {
+    constructor(
+      public source: string,
+      public data?: { name?: string },
+    ) {}
+  }
+
   return {
+    AttachmentBuilder,
     Client: MockClient,
     Events,
     GatewayIntentBits,
@@ -782,6 +798,93 @@ describe('DiscordChannel', () => {
       expect(mockChannel.send).toHaveBeenCalledTimes(2);
       expect(mockChannel.send).toHaveBeenNthCalledWith(1, 'x'.repeat(2000));
       expect(mockChannel.send).toHaveBeenNthCalledWith(2, 'x'.repeat(1000));
+    });
+  });
+
+  // --- sendFile ---
+
+  describe('sendFile', () => {
+    const tmpFile = '/tmp/nanoclaw-discord-test-file.txt';
+
+    beforeAll(() => {
+      require('fs').writeFileSync(tmpFile, 'hello');
+    });
+
+    it('sends file with caption via channel', async () => {
+      const opts = createTestOpts();
+      const channel = new DiscordChannel('test-token', opts);
+      await channel.connect();
+
+      const mockChannel = {
+        send: vi.fn().mockResolvedValue(undefined),
+        sendTyping: vi.fn(),
+      };
+      currentClient().channels.fetch.mockResolvedValue(mockChannel);
+
+      await channel.sendFile('dc:1234567890123456', tmpFile, 'caption');
+
+      expect(mockChannel.send).toHaveBeenCalledTimes(1);
+      const call = mockChannel.send.mock.calls[0][0];
+      expect(call.content).toBe('caption');
+      expect(call.files).toHaveLength(1);
+      expect(call.files[0].data.name).toBe('nanoclaw-discord-test-file.txt');
+    });
+
+    it('sends file without caption', async () => {
+      const opts = createTestOpts();
+      const channel = new DiscordChannel('test-token', opts);
+      await channel.connect();
+
+      const mockChannel = {
+        send: vi.fn().mockResolvedValue(undefined),
+        sendTyping: vi.fn(),
+      };
+      currentClient().channels.fetch.mockResolvedValue(mockChannel);
+
+      await channel.sendFile('dc:1234567890123456', tmpFile);
+
+      const call = mockChannel.send.mock.calls[0][0];
+      expect(call.content).toBeUndefined();
+      expect(call.files).toHaveLength(1);
+    });
+
+    it('splits caption exceeding 2000 characters', async () => {
+      const opts = createTestOpts();
+      const channel = new DiscordChannel('test-token', opts);
+      await channel.connect();
+
+      const mockChannel = {
+        send: vi.fn().mockResolvedValue(undefined),
+        sendTyping: vi.fn(),
+      };
+      currentClient().channels.fetch.mockResolvedValue(mockChannel);
+
+      const longCaption = 'y'.repeat(3000);
+      await channel.sendFile('dc:1234567890123456', tmpFile, longCaption);
+
+      expect(mockChannel.send).toHaveBeenCalledTimes(2);
+      expect(mockChannel.send.mock.calls[0][0].content).toBe('y'.repeat(2000));
+      expect(mockChannel.send).toHaveBeenNthCalledWith(2, 'y'.repeat(1000));
+    });
+
+    it('does nothing when client is not initialized', async () => {
+      const opts = createTestOpts();
+      const channel = new DiscordChannel('test-token', opts);
+      await channel.sendFile('dc:1234567890123456', tmpFile, 'caption');
+    });
+
+    it('handles send failure gracefully', async () => {
+      const opts = createTestOpts();
+      const channel = new DiscordChannel('test-token', opts);
+      await channel.connect();
+
+      currentClient().channels.fetch.mockRejectedValueOnce(
+        new Error('Channel not found'),
+      );
+
+      await expect(
+        channel.sendFile('dc:1234567890123456', tmpFile, 'x'),
+      ).resolves.toBeUndefined();
     });
   });
 

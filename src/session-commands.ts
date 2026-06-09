@@ -24,6 +24,7 @@ export function extractSessionCommand(
   if (command === '/thinking') return '/thinking';
   if (command === '/new') return '/new';
   if (command === '/auto-update') return '/auto-update';
+  if (command === '/effort' || command.startsWith('/effort ')) return command;
   if (command.startsWith('/dreaming')) return command;
   return null;
 }
@@ -71,12 +72,27 @@ export interface SessionCommandDeps {
   getUsageReport: () => string;
   /** Check for package updates, rebuild if needed. Returns report string and whether rebuild happened. */
   autoUpdate: () => Promise<{ report: string; rebuilt: boolean }>;
+  /** Get current resolved reasoning effort for this group. */
+  getEffort: () => string;
+  /** Set effort override for this group (null = remove override, use default). Throws on failure. */
+  setEffort: (level: string | null) => void;
 }
 
 function resultToText(result: string | object | null | undefined): string {
   if (!result) return '';
   const raw = typeof result === 'string' ? result : JSON.stringify(result);
   return raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+}
+
+function isSyntheticAutoCompactCommand(
+  msg: NewMessage,
+  command: string | null,
+): boolean {
+  return (
+    command === '/compact' &&
+    msg.sender === 'system' &&
+    msg.id.startsWith('autocompact-')
+  );
 }
 
 /**
@@ -111,6 +127,8 @@ export async function handleSessionCommand(opts: {
     : null;
 
   if (!command || !cmdMsg) return { handled: false };
+
+  const isAutoCompactCommand = isSyntheticAutoCompactCommand(cmdMsg, command);
 
   if (!isSessionCommandAllowed(isMainGroup, !!cmdMsg.is_from_me)) {
     // DENIED: send denial if the sender would normally be allowed to interact,
@@ -227,6 +245,49 @@ export async function handleSessionCommand(opts: {
     return { handled: true, success: true };
   }
 
+  // /effort: host-only — show or set reasoning effort for this group.
+  // Setting a new value closes the active container so the next message picks up the change.
+  if (command === '/effort' || command.startsWith('/effort ')) {
+    const arg = command.slice('/effort'.length).trim().toLowerCase();
+
+    if (!arg) {
+      await deps.sendMessage(
+        `Effort: ${deps.getEffort()}\nUsage: /effort low|medium|high|max|reset`,
+      );
+      deps.advanceCursor(cmdMsg.timestamp);
+      return { handled: true, success: true };
+    }
+
+    const isReset = arg === 'reset' || arg === 'default';
+    const VALID = ['low', 'medium', 'high', 'max'];
+    if (!isReset && !VALID.includes(arg)) {
+      await deps.sendMessage(
+        `Invalid effort "${arg}". Valid: low, medium, high, max, reset.`,
+      );
+      deps.advanceCursor(cmdMsg.timestamp);
+      return { handled: true, success: true };
+    }
+
+    try {
+      deps.setEffort(isReset ? null : arg);
+    } catch (err) {
+      await deps.sendMessage(
+        `Failed to set effort: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      deps.advanceCursor(cmdMsg.timestamp);
+      return { handled: true, success: true };
+    }
+
+    deps.closeActiveContainer();
+    await deps.sendMessage(
+      isReset
+        ? `Effort reset to default (${deps.getEffort()}). Container restarted.`
+        : `Effort set to ${arg}. Container restarted.`,
+    );
+    deps.advanceCursor(cmdMsg.timestamp);
+    return { handled: true, success: true };
+  }
+
   // /restart: host-only command — no container needed
   if (command === '/restart') {
     await deps.sendMessage('Rebooting...');
@@ -263,12 +324,14 @@ export async function handleSessionCommand(opts: {
 
     if (preResult === 'error' || hadPreError) {
       logger.warn(
-        { group: groupName },
+        { group: groupName, autoCompact: isAutoCompactCommand },
         'Pre-compact processing failed, aborting session command',
       );
-      await deps.sendMessage(
-        `Failed to process messages before ${command}. Try again.`,
-      );
+      if (!isAutoCompactCommand) {
+        await deps.sendMessage(
+          `Failed to process messages before ${command}. Try again.`,
+        );
+      }
       if (preOutputSent) {
         // Output was already sent — don't retry or it will duplicate.
         // Advance cursor past pre-compact messages, leave command pending.
@@ -282,12 +345,11 @@ export async function handleSessionCommand(opts: {
   // Forward the literal slash command as the prompt (no XML formatting)
   await deps.setTyping(true);
 
-  const isAutoCompact = cmdMsg.sender === 'system';
   let hadCmdError = false;
   const cmdOutput = await deps.runAgent(command, async (result) => {
     if (result.status === 'error') hadCmdError = true;
     const text = resultToText(result.result);
-    if (text && !isAutoCompact) await deps.sendMessage(text);
+    if (text && !isAutoCompactCommand) await deps.sendMessage(text);
   });
 
   // Advance cursor to the command — messages AFTER it remain pending for next poll.
@@ -295,7 +357,11 @@ export async function handleSessionCommand(opts: {
   await deps.setTyping(false);
 
   if (cmdOutput === 'error' || hadCmdError) {
-    await deps.sendMessage(`${command} failed. The session is unchanged.`);
+    if (isAutoCompactCommand) {
+      logger.warn({ group: groupName, command }, 'Auto-compact failed');
+    } else {
+      await deps.sendMessage(`${command} failed. The session is unchanged.`);
+    }
   }
 
   return { handled: true, success: true };

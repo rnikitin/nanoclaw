@@ -2,7 +2,7 @@
  * Canvas State Store — SQLite-backed storage for canvas sessions.
  *
  * Persists JSX code, state, and metadata across restarts.
- * TTL-based cleanup of inactive canvases (24h default).
+ * Canvases live until explicitly closed (deleteCanvas / action=close).
  */
 import Database from 'better-sqlite3';
 import path from 'path';
@@ -20,8 +20,6 @@ export interface CanvasSession {
   createdAt: number;
   updatedAt: number;
 }
-
-const CANVAS_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 let db: Database.Database;
 
@@ -161,25 +159,4 @@ export function deleteCanvas(canvasId: string): boolean {
 export function listCanvases(group?: string): CanvasSession[] {
   const all = Array.from(cache.values());
   return group ? all.filter((s) => s.group === group) : all;
-}
-
-/**
- * Remove canvases that haven't been updated within the TTL.
- */
-export function cleanupExpiredCanvases(): string[] {
-  const now = Date.now();
-  const expired: string[] = [];
-  for (const [id, session] of cache) {
-    if (now - session.updatedAt > CANVAS_TTL_MS) {
-      cache.delete(id);
-      expired.push(id);
-    }
-  }
-  if (expired.length > 0) {
-    const placeholders = expired.map(() => '?').join(',');
-    db.prepare(`DELETE FROM canvases WHERE canvas_id IN (${placeholders})`).run(
-      ...expired,
-    );
-  }
-  return expired;
 }

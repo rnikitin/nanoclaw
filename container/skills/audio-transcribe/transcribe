@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Transcribe audio via OpenRouter chat completions (multimodal)."""
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+
+FORMAT_MAP = {
+    '.wav': 'wav',
+    '.mp3': 'mp3',
+    '.aiff': 'aiff',
+    '.aif': 'aiff',
+    '.aac': 'aac',
+    '.ogg': 'ogg',
+    '.opus': 'ogg',
+    '.flac': 'flac',
+    '.m4a': 'm4a',
+}
+
+DEFAULT_MODEL = 'google/gemini-2.5-flash'
+ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions'
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(
+        prog='transcribe',
+        description='Transcribe audio via OpenRouter (Gemini/GPT-4o multimodal).',
+    )
+    p.add_argument('file', help='Path to audio file (wav/mp3/m4a/ogg/opus/flac/aac/aiff)')
+    p.add_argument('-m', '--model', default=DEFAULT_MODEL,
+                   help=f'OpenRouter model id (default: {DEFAULT_MODEL})')
+    p.add_argument('-p', '--prompt', default=None,
+                   help='Override the transcription prompt')
+    p.add_argument('-l', '--lang', default=None,
+                   help='Language hint, e.g. ru / en. Used in default prompt.')
+    p.add_argument('--json', dest='as_json', action='store_true',
+                   help='Print full JSON response instead of just the transcript')
+    args = p.parse_args()
+
+    key = os.environ.get('OPENROUTER_API_KEY', '').strip()
+    if not key:
+        print('OPENROUTER_API_KEY is not set in the environment.', file=sys.stderr)
+        return 2
+
+    src = Path(args.file)
+    if not src.is_file():
+        print(f'File not found: {src}', file=sys.stderr)
+        return 2
+    fmt = FORMAT_MAP.get(src.suffix.lower())
+    if not fmt:
+        print(
+            f'Unsupported audio extension: {src.suffix!r}. '
+            f'Supported: {sorted(set(FORMAT_MAP))}',
+            file=sys.stderr,
+        )
+        return 2
+
+    audio_b64 = base64.b64encode(src.read_bytes()).decode('ascii')
+
+    if args.prompt:
+        prompt_text = args.prompt
+    elif args.lang:
+        prompt_text = (
+            f'Transcribe the audio verbatim in {args.lang}. '
+            f'Return only the transcript text, no commentary.'
+        )
+    else:
+        prompt_text = (
+            'Transcribe the audio verbatim. '
+            'Return only the transcript text, no commentary.'
+        )
+
+    body = json.dumps({
+        'model': args.model,
+        'messages': [{
+            'role': 'user',
+            'content': [
+                {'type': 'text', 'text': prompt_text},
+                {'type': 'input_audio',
+                 'input_audio': {'data': audio_b64, 'format': fmt}},
+            ],
+        }],
+    }).encode('utf-8')
+
+    req = urllib.request.Request(
+        ENDPOINT,
+        data=body,
+        method='POST',
+        headers={
+            'Authorization': f'Bearer {key}',
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://nanoclaw.local',
+            'X-Title': 'NanoClaw transcribe',
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode('utf-8', errors='replace')[:2000]
+        print(f'OpenRouter HTTP {e.code}: {body_text}', file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f'Request failed: {type(e).__name__}: {e}', file=sys.stderr)
+        return 1
+
+    if args.as_json:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return 0
+
+    try:
+        text = data['choices'][0]['message']['content']
+    except (KeyError, IndexError, TypeError):
+        print(f'Unexpected response shape: {json.dumps(data)[:500]}', file=sys.stderr)
+        return 1
+
+    if isinstance(text, list):
+        text = ''.join(
+            part.get('text', '') for part in text if isinstance(part, dict)
+        )
+    print(text)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

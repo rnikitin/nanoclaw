@@ -70,6 +70,16 @@ export class GroupQueue {
   }
 
   /**
+   * True if a live container is serving this chatJid under the given folder.
+   * Used by IPC auth to allow outbound to JIDs that aren't in registered_groups
+   * (e.g. Discord threads, which are ephemeral and folder-scoped by nature).
+   */
+  isActiveInFolder(groupJid: string, folder: string): boolean {
+    const state = this.groups.get(groupJid);
+    return !!(state?.active && state.groupFolder === folder);
+  }
+
+  /**
    * Drop tracking state for groups that are no longer registered and have no
    * active container / pending work. Called periodically to keep the map from
    * growing forever as the user deletes or renames groups. Returns the count

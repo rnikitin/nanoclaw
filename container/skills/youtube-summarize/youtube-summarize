@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""Summarize a YouTube video via OpenRouter -> Gemini (AI Studio provider)."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+
+DEFAULT_MODEL = 'google/gemini-3.1-flash-lite'
+ENDPOINT = 'https://openrouter.ai/api/v1/chat/completions'
+
+
+def _to_offset(s: str) -> str:
+    """Accept 60s / 12m / 1h30m / MM:SS / HH:MM:SS / bare seconds. Return Gemini-format like '60s' or '5400s'."""
+    import re
+    s = s.strip()
+    # bare seconds
+    if re.fullmatch(r'\d+', s):
+        return f'{int(s)}s'
+    # MM:SS or HH:MM:SS
+    m = re.fullmatch(r'(?:(\d+):)?(\d+):(\d+)', s)
+    if m:
+        h = int(m.group(1) or 0)
+        mm = int(m.group(2))
+        ss = int(m.group(3))
+        return f'{h * 3600 + mm * 60 + ss}s'
+    # 1h30m45s style
+    parts = re.findall(r'(\d+)([smhd])', s)
+    if parts:
+        mult = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
+        total = sum(int(n) * mult[u] for n, u in parts)
+        return f'{total}s'
+    raise SystemExit(f'Cannot parse offset {s!r}. Use forms like 90s, 12m, 1h30m, 5:30, 1:05:30.')
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(
+        prog='youtube-summarize',
+        description='Summarize a public YouTube video via Gemini through OpenRouter.',
+    )
+    p.add_argument('url', help='YouTube URL (public videos only)')
+    p.add_argument('-m', '--model', default=DEFAULT_MODEL,
+                   help=f'OpenRouter model id (default: {DEFAULT_MODEL})')
+    p.add_argument('-p', '--prompt', default=None,
+                   help='Override the default summarization prompt')
+    p.add_argument('-l', '--lang', default=None,
+                   help='Language hint for the default prompt, e.g. ru / en')
+    p.add_argument('--resolution', default='low', choices=['low', 'standard'],
+                   help='Gemini media resolution (default: low)')
+    p.add_argument('--fps', type=float, default=None,
+                   help='Sampling rate in frames per second (default 1). '
+                        'Lower (0.3-0.5) cuts cost for podcast/stream-style videos.')
+    p.add_argument('--start', default=None,
+                   help='Start offset (e.g. 60s, 12m, 1h30m, MM:SS, HH:MM:SS).')
+    p.add_argument('--end', default=None,
+                   help='End offset (same formats as --start).')
+    p.add_argument('--no-fallback', action='store_true',
+                   help='Disable transcript fallback on Gemini 400 (content-policy) errors.')
+    p.add_argument('--json', dest='as_json', action='store_true',
+                   help='Print full JSON response instead of just the summary')
+    args = p.parse_args()
+
+    key = os.environ.get('OPENROUTER_API_KEY', '').strip()
+    if not key:
+        print('OPENROUTER_API_KEY is not set in the environment.', file=sys.stderr)
+        return 2
+
+    if args.prompt:
+        prompt_text = args.prompt
+    else:
+        lang_line = (
+            f'Write the entire summary in {args.lang}.'
+            if args.lang
+            else 'Write the summary in the same language the speaker uses; '
+                 'if mixed, default to the dominant language.'
+        )
+        prompt_text = (
+            'Produce a detailed, structured summary of this YouTube video.\n\n'
+            f'{lang_line}\n\n'
+            '## Adapt the structure to the video type\n'
+            'Pick the sections that actually fit what you watched:\n'
+            '- Lecture / explainer  → Main theses · Key facts and numbers · Reasoning / arguments · Notable quotes · Risks or caveats the speaker raises\n'
+            '- Interview / dialogue → Topics covered · Each speaker\'s position · Disagreements · Key insights · Notable quotes\n'
+            '- News / market review → What happened · Numbers (prices, rates, dates) · Implications · Speaker\'s forecast · Risks\n'
+            '- Tutorial / how-to    → Goal · Prerequisites · Step-by-step · Key commands or code · Pitfalls\n'
+            '- Stream / podcast     → Topics in order · Main claim per topic · Notable quotes · Tangents worth flagging\n'
+            'If the video doesn\'t fit any of those cleanly, invent the right sections for it.\n\n'
+            '## Quality bar\n'
+            '- 15-25 bullets total across all sections; longer videos get more, not fewer.\n'
+            '- Every section must be specific to THIS video — no generic filler.\n'
+            '- Quote 1-3 high-signal lines verbatim, each with a timestamp.\n'
+            '- Always include a "Key numbers / facts" section when the video has any prices, rates, dates, statistics, or named entities.\n'
+            '- Timestamps in MM:SS (or HH:MM:SS for videos over 1 hour). Sprinkle them generously — at least one per major section.\n'
+            '- Skip intros, sponsorship reads, sign-offs, and small talk.\n'
+            '- If the speaker contradicts themselves or makes a claim that needs caution, call it out in a "Caveats" line.\n'
+        )
+
+    media_res_map = {
+        'low': 'MEDIA_RESOLUTION_LOW',
+        'standard': 'MEDIA_RESOLUTION_MEDIUM',
+    }
+
+    video_metadata: dict = {}
+    if args.fps is not None:
+        video_metadata['fps'] = args.fps
+    if args.start:
+        video_metadata['start_offset'] = _to_offset(args.start)
+    if args.end:
+        video_metadata['end_offset'] = _to_offset(args.end)
+
+    video_part = {'type': 'video_url', 'video_url': {'url': args.url}}
+    if video_metadata:
+        video_part['video_url']['video_metadata'] = video_metadata
+
+    body = json.dumps({
+        'model': args.model,
+        'provider': {'only': ['google-ai-studio']},
+        'messages': [{
+            'role': 'user',
+            'content': [
+                video_part,
+                {'type': 'text', 'text': prompt_text},
+            ],
+        }],
+        'extra_body': {
+            'generationConfig': {
+                'mediaResolution': media_res_map[args.resolution],
+            },
+        },
+    }).encode('utf-8')
+
+    req = urllib.request.Request(
+        ENDPOINT,
+        data=body,
+        method='POST',
+        headers={
+            'Authorization': f'Bearer {key}',
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://nanoclaw.local',
+            'X-Title': 'NanoClaw youtube-summarize',
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=600) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode('utf-8', errors='replace')[:2000]
+        if e.code == 400 and not args.no_fallback:
+            print(
+                f'Gemini returned 400 (likely content-policy block). Falling back to transcript pipeline.',
+                file=sys.stderr,
+            )
+            return _transcript_fallback(args, prompt_text)
+        print(f'OpenRouter HTTP {e.code}: {body_text}', file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f'Request failed: {type(e).__name__}: {e}', file=sys.stderr)
+        return 1
+
+    # OpenRouter sometimes returns 200 with an `error` payload (provider returned error).
+    if isinstance(data, dict) and 'error' in data and 'choices' not in data:
+        err = data['error']
+        code = err.get('code') if isinstance(err, dict) else None
+        msg = err.get('message') if isinstance(err, dict) else str(err)
+        if code == 400 and not args.no_fallback:
+            print(
+                f'Gemini provider error 400 ({msg}). Falling back to transcript pipeline.',
+                file=sys.stderr,
+            )
+            return _transcript_fallback(args, prompt_text)
+        print(f'OpenRouter provider error: {json.dumps(err, ensure_ascii=False)[:500]}', file=sys.stderr)
+        return 1
+
+    if args.as_json:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return 0
+
+    try:
+        text = data['choices'][0]['message']['content']
+    except (KeyError, IndexError, TypeError):
+        print(f'Unexpected response shape: {json.dumps(data)[:500]}', file=sys.stderr)
+        return 1
+
+    if isinstance(text, list):
+        text = ''.join(
+            part.get('text', '') for part in text if isinstance(part, dict)
+        )
+    print(text)
+    return 0
+
+
+def _transcript_fallback(args, prompt_text: str) -> int:
+    """When Gemini blocks the video: pull transcript, summarize text via OpenRouter."""
+    import shutil
+    import subprocess
+
+    key = os.environ['OPENROUTER_API_KEY'].strip()
+    if not shutil.which('youtube-data'):
+        print('Fallback unavailable: youtube-data CLI is not on PATH.', file=sys.stderr)
+        return 1
+    cmd = ['youtube-data', 'transcript', args.url]
+    if args.lang:
+        cmd += ['--lang', args.lang]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr or '')
+        print(
+            'Transcript fallback failed. Cookies at /workspace/global/.yt-cookies.txt '
+            'are required for the yt-dlp path — ask the user for a fresh export.',
+            file=sys.stderr,
+        )
+        return 1
+    transcript = proc.stdout.strip()
+    if not transcript:
+        print('Transcript fallback returned empty text.', file=sys.stderr)
+        return 1
+
+    # Cap transcript size — Flash-Lite has 1M context but we want sane cost.
+    MAX_CHARS = 300_000
+    if len(transcript) > MAX_CHARS:
+        transcript = transcript[:MAX_CHARS] + '\n…[truncated]'
+
+    text_prompt = (
+        f'{prompt_text}\n\n'
+        f'You will NOT receive the video itself — only the auto-generated transcript below '
+        f'(may contain ASR errors). Treat it as the speaker\'s words. '
+        f'If the transcript is in a language other than the requested output language, translate.\n\n'
+        f'--- TRANSCRIPT ---\n{transcript}\n--- END TRANSCRIPT ---'
+    )
+
+    body = json.dumps({
+        'model': args.model,
+        'provider': {'only': ['google-ai-studio']},
+        'messages': [{'role': 'user', 'content': text_prompt}],
+    }).encode('utf-8')
+
+    req = urllib.request.Request(
+        ENDPOINT, data=body, method='POST',
+        headers={
+            'Authorization': f'Bearer {key}',
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://nanoclaw.local',
+            'X-Title': 'NanoClaw youtube-summarize (transcript fallback)',
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode('utf-8', errors='replace')[:2000]
+        print(f'OpenRouter HTTP {e.code} (text fallback): {body_text}', file=sys.stderr)
+        return 1
+
+    if args.as_json:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return 0
+
+    try:
+        out = data['choices'][0]['message']['content']
+    except (KeyError, IndexError, TypeError):
+        print(f'Unexpected response shape: {json.dumps(data)[:500]}', file=sys.stderr)
+        return 1
+    if isinstance(out, list):
+        out = ''.join(p.get('text', '') for p in out if isinstance(p, dict))
+    print(out)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

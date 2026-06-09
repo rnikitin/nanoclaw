@@ -67,6 +67,13 @@ export interface ScheduledTask {
   schedule_value: string;
   context_mode: 'group' | 'isolated';
   execution_mode?: 'agent' | 'script';
+  /**
+   * Optional bash command run before the task fires. Exit 0 → fire the task;
+   * non-zero → skip this scheduled fire (no LLM, no container). With
+   * precondition_invert set, the logic is reversed (non-zero → fire).
+   */
+  precondition?: string | null;
+  precondition_invert?: boolean;
   next_run: string | null;
   last_run: string | null;
   last_result: string | null;
@@ -78,7 +85,7 @@ export interface TaskRunLog {
   task_id: string;
   run_at: string;
   duration_ms: number;
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'skipped';
   result: string | null;
   error: string | null;
 }
@@ -92,6 +99,8 @@ export interface TaskSnapshotRow {
   status: ScheduledTask['status'];
   next_run: string | null;
   execution_mode?: ScheduledTask['execution_mode'];
+  precondition?: string | null;
+  precondition_invert?: boolean;
   is_running?: boolean;
 }
 

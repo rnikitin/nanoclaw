@@ -101,37 +101,41 @@ server.tool(
 
 server.tool(
   'schedule_task',
-  `Schedule a recurring or one-time task. Returns the task ID for future reference. To modify an existing task, use update_task instead.
+  `Schedule recurring or one-time task. Returns task_id; use update_task to modify.
 
-EXECUTION MODE:
-\u2022 "agent" (default): Task runs as a full Claude agent with access to all tools. Standard 30-min timeout. Shares the group container queue with messages.
-\u2022 "script": Task runs in an independent container with NO timeout. The container is not interrupted by user messages and doesn't block message processing. Use for long-running pipelines, background processing, or tasks that may take hours. The prompt is still sent to a Claude agent — use Bash tool for scripts. The \`notify\` CLI is available inside the container to send messages: \`notify "message"\` or \`notify -f file.csv "caption"\`.
+execution_mode:
+• "agent" (default): full Claude agent, 30-min timeout, shares group queue.
+• "script": independent container, no timeout, not blocked by user messages. Use for long pipelines. Prompt still runs in Claude agent — \`notify "msg"\` / \`notify -f file.csv "cap"\` CLI available to send messages to chat.
 
-CONTEXT MODE - Choose based on task type:
-\u2022 "group": Task runs in the group's conversation context, with access to chat history. Use for tasks that need context about ongoing discussions, user preferences, or recent interactions.
-\u2022 "isolated": Task runs in a fresh session with no conversation history. Use for independent tasks that don't need prior context. When using isolated mode, include all necessary context in the prompt itself.
+context_mode:
+• "group": has chat history + memory (e.g., "remind me about our discussion").
+• "isolated": fresh session — include all needed context in prompt (e.g., "daily weather").
 
-If unsure which mode to use, you can ask the user. Examples:
-- "Remind me about our discussion" \u2192 group (needs conversation context)
-- "Check the weather every morning" \u2192 isolated (self-contained task)
-- "Follow up on my request" \u2192 group (needs to know what was requested)
-- "Generate a daily report" \u2192 isolated (just needs instructions in prompt)
+precondition (optional): a bash command run BEFORE the task fires, in a cheap
+one-shot container — no Claude, no LLM cost. exit 0 → the task fires; non-zero
+→ this cycle is skipped silently (logged as "skipped", no message sent). Set
+precondition_invert: true to flip it (non-zero → fire). Use this for polling:
+schedule a frequent cron, put the cheap check in the precondition, and only
+pay for the agent when the condition is actually met. The check has the same
+mounts/env as the task — python, ccxt from pkg-cache, /workspace/group, all
+available. 60s timeout (timeout = skip). Examples:
+• "test -f /workspace/group/flags/ready"
+• "python3 /workspace/group/checks/btc_above.py 80500"
 
-MESSAGING BEHAVIOR - The task agent's output is sent to the user or group. It can also use send_message for immediate delivery, or wrap output in <internal> tags to suppress it. Include guidance in the prompt about whether the agent should:
-\u2022 Always send a message (e.g., reminders, daily briefings)
-\u2022 Only send a message when there's something to report (e.g., "notify me if...")
-\u2022 Never send a message (background maintenance tasks)
+Output: task agent's response is sent to the chat. Use send_message for progress, wrap in <internal>…</internal> to suppress. Specify in the prompt whether the agent should always/conditionally/never send a message.
 
-SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
-\u2022 cron: Standard cron expression (e.g., "*/5 * * * *" for every 5 minutes, "0 9 * * *" for daily at 9am LOCAL time)
-\u2022 interval: Milliseconds between runs (e.g., "300000" for 5 minutes, "3600000" for 1 hour)
-\u2022 once: Local time WITHOUT "Z" suffix (e.g., "2026-02-01T15:30:00"). Do NOT use UTC/Z suffix.`,
+schedule_value (LOCAL timezone):
+• cron: "*/5 * * * *", "0 9 * * *"
+• interval: ms as string — "300000" = 5min
+• once: "2026-02-01T15:30:00" — NO Z suffix, NOT UTC`,
   {
     prompt: z.string().describe('What the agent should do when the task runs. For isolated mode, include all necessary context here.'),
     schedule_type: z.enum(['cron', 'interval', 'once']).describe('cron=recurring at specific times, interval=recurring every N ms, once=run once at specific time'),
     schedule_value: z.string().describe('cron: "*/5 * * * *" | interval: milliseconds like "300000" | once: local timestamp like "2026-02-01T15:30:00" (no Z suffix!)'),
     context_mode: z.enum(['group', 'isolated']).default('group').describe('group=runs with chat history and memory, isolated=fresh session (include context in prompt)'),
     execution_mode: z.enum(['agent', 'script']).default('agent').describe('agent=standard container with timeout, script=independent container with no timeout (not interrupted by messages)'),
+    precondition: z.string().optional().describe('Bash command run before the task fires. exit 0 → fire, non-zero → skip this cycle (no LLM cost). Use for cheap polling checks.'),
+    precondition_invert: z.boolean().optional().describe('Flip precondition logic: non-zero exit → fire, exit 0 → skip. Default false.'),
     target_group_jid: z.string().optional().describe('(Main group only) JID of the group to schedule the task for. Defaults to the current group.'),
   },
   async (args) => {
@@ -182,6 +186,8 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
       schedule_value: args.schedule_value,
       context_mode: args.context_mode || 'group',
       execution_mode: args.execution_mode || 'agent',
+      precondition: args.precondition,
+      precondition_invert: args.precondition_invert,
       targetJid,
       createdBy: groupFolder,
       timestamp: new Date().toISOString(),
@@ -219,10 +225,13 @@ server.tool(
 
       const formatted = tasks
         .map(
-          (t: { id: string; prompt: string; schedule_type: string; schedule_value: string; status: string; next_run: string; execution_mode?: string; is_running?: boolean }) => {
+          (t: { id: string; prompt: string; schedule_type: string; schedule_value: string; status: string; next_run: string; execution_mode?: string; precondition?: string | null; precondition_invert?: boolean; is_running?: boolean }) => {
             const mode = t.execution_mode === 'script' ? ' [script]' : '';
             const running = t.is_running ? ' (RUNNING)' : '';
-            return `- [${t.id}] ${t.prompt.slice(0, 50)}... (${t.schedule_type}: ${t.schedule_value}) - ${t.status}${mode}${running}, next: ${t.next_run || 'N/A'}`;
+            const gate = t.precondition
+              ? ` [gated${t.precondition_invert ? ':invert' : ''}: ${t.precondition.slice(0, 40)}]`
+              : '';
+            return `- [${t.id}] ${t.prompt.slice(0, 50)}... (${t.schedule_type}: ${t.schedule_value}) - ${t.status}${mode}${gate}${running}, next: ${t.next_run || 'N/A'}`;
           },
         )
         .join('\n');
@@ -295,12 +304,14 @@ server.tool(
 
 server.tool(
   'update_task',
-  'Update an existing scheduled task. Only provided fields are changed; omitted fields stay the same.',
+  'Update an existing scheduled task. Only provided fields are changed; omitted fields stay the same. To clear a precondition, pass an empty string.',
   {
     task_id: z.string().describe('The task ID to update'),
     prompt: z.string().optional().describe('New prompt for the task'),
     schedule_type: z.enum(['cron', 'interval', 'once']).optional().describe('New schedule type'),
     schedule_value: z.string().optional().describe('New schedule value (see schedule_task for format)'),
+    precondition: z.string().optional().describe('New precondition bash command (see schedule_task). Empty string clears it.'),
+    precondition_invert: z.boolean().optional().describe('Flip precondition logic: non-zero exit → fire, exit 0 → skip.'),
   },
   async (args) => {
     // Validate schedule_value if provided
@@ -326,7 +337,7 @@ server.tool(
       }
     }
 
-    const data: Record<string, string | undefined> = {
+    const data: Record<string, string | boolean | undefined> = {
       type: 'update_task',
       taskId: args.task_id,
       groupFolder,
@@ -336,6 +347,8 @@ server.tool(
     if (args.prompt !== undefined) data.prompt = args.prompt;
     if (args.schedule_type !== undefined) data.schedule_type = args.schedule_type;
     if (args.schedule_value !== undefined) data.schedule_value = args.schedule_value;
+    if (args.precondition !== undefined) data.precondition = args.precondition;
+    if (args.precondition_invert !== undefined) data.precondition_invert = args.precondition_invert;
 
     writeIpcFile(TASKS_DIR, data);
 

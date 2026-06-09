@@ -7,8 +7,9 @@ import {
   mkdirSync,
   writeFileSync,
 } from 'fs';
-import { join } from 'path';
+import { join, basename } from 'path';
 import { tmpdir } from 'os';
+import { execSync } from 'child_process';
 import { trackRecall, loadRecallStore } from './recall-tracker.js';
 import {
   lightSleep,
@@ -28,6 +29,19 @@ describe('Dreaming', () => {
   });
 
   afterEach(() => {
+    // Remove any QMD collections this test registered, else they orphan in
+    // ~/.config/qmd/index.yml pointing at now-deleted /tmp paths.
+    const name = basename(groupDir);
+    for (const suffix of ['-memory', '-conversations']) {
+      try {
+        execSync(`qmd collection remove "${name}${suffix}"`, {
+          stdio: 'pipe',
+          timeout: 5000,
+        });
+      } catch {
+        /* not registered or qmd missing */
+      }
+    }
     rmSync(groupDir, { recursive: true, force: true });
   });
 
@@ -218,6 +232,7 @@ describe('Dreaming', () => {
     it('creates all required directories and files', () => {
       const newGroupDir = mkdtempSync(join(tmpdir(), 'nanoclaw-new-group-'));
       mkdirSync(join(newGroupDir, 'memory'), { recursive: true });
+      const newGroupName = basename(newGroupDir);
 
       setupGroupDreaming(newGroupDir);
 
@@ -234,6 +249,16 @@ describe('Dreaming', () => {
         existsSync(join(newGroupDir, '.dreams', 'phase-signals.json')),
       ).toBe(true);
 
+      for (const suffix of ['-memory', '-conversations']) {
+        try {
+          execSync(`qmd collection remove "${newGroupName}${suffix}"`, {
+            stdio: 'pipe',
+            timeout: 5000,
+          });
+        } catch {
+          /* not registered or qmd missing */
+        }
+      }
       rmSync(newGroupDir, { recursive: true, force: true });
     });
 

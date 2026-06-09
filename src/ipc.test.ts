@@ -67,6 +67,7 @@ describe('IPC watcher', () => {
       },
       sendFile: async () => {},
       registeredGroups: () => groups,
+      isActiveInFolder: () => false,
       registerGroup: (jid, group) => {
         groups[jid] = group;
       },

@@ -1,13 +1,20 @@
-import { ChildProcess } from 'child_process';
+import { ChildProcess, spawn } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
 
-import { evaluateGroup, readUsage } from './auto-compact.js';
+import {
+  evaluateGroup,
+  readUsage,
+  shouldReadUsageForAutoCompact,
+} from './auto-compact.js';
 import { SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
 import {
+  buildContainerArgs,
+  buildVolumeMounts,
   ContainerOutput,
   runContainerAgent,
   writeTasksSnapshot,
 } from './container-runner.js';
+import { CONTAINER_RUNTIME_BIN, stopContainer } from './container-runtime.js';
 import {
   getAllTasks,
   getDueTasks,
@@ -45,6 +52,8 @@ export function buildTaskSnapshotRows(): TaskSnapshotRow[] {
     status: t.status,
     next_run: t.next_run,
     execution_mode: t.execution_mode,
+    precondition: t.precondition ?? null,
+    precondition_invert: !!t.precondition_invert,
     is_running: runningIds.has(t.id),
   }));
 }
@@ -134,6 +143,114 @@ export interface SchedulerDependencies {
   sendMessage: (jid: string, text: string) => Promise<void>;
 }
 
+const PRECONDITION_TIMEOUT_MS = 60_000;
+
+interface PreconditionResult {
+  passed: boolean;
+  exitCode: number | null;
+  outputTail: string;
+  timedOut: boolean;
+}
+
+/**
+ * Run a task's precondition: a one-shot bash container (no agent-runner, no
+ * LLM) that decides whether the real task should fire this cycle. Reuses the
+ * task's volume mounts and env so checks can use python/ccxt from pkg-cache
+ * and read /workspace/group. Exit 0 → fire (non-zero → fire when inverted).
+ */
+async function runPrecondition(
+  task: ScheduledTask,
+  group: RegisteredGroup,
+  isMain: boolean,
+): Promise<PreconditionResult> {
+  const precondition = task.precondition;
+  if (!precondition) {
+    return { passed: true, exitCode: 0, outputTail: '', timedOut: false };
+  }
+
+  const mounts = buildVolumeMounts(group, isMain, task.chat_jid);
+  const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
+  const containerName = `nanoclaw-precond-${safeName}-${Date.now()}`;
+  const baseArgs = buildContainerArgs(
+    mounts,
+    containerName,
+    group.folder,
+    task.chat_jid,
+  );
+
+  // buildContainerArgs ends with the image name. Splice `--entrypoint bash`
+  // in before it and append `-c <precondition>` after, turning the agent
+  // image into a plain one-shot bash runner.
+  const image = baseArgs[baseArgs.length - 1];
+  const args = [
+    ...baseArgs.slice(0, -1),
+    '--entrypoint',
+    '/bin/bash',
+    image,
+    '-c',
+    precondition,
+  ];
+
+  return new Promise<PreconditionResult>((resolve) => {
+    const proc = spawn(CONTAINER_RUNTIME_BIN, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        stopContainer(containerName);
+      } catch {
+        proc.kill('SIGKILL');
+      }
+      resolve({
+        passed: false,
+        exitCode: null,
+        outputTail: (stderr || stdout).slice(-500),
+        timedOut: true,
+      });
+    }, PRECONDITION_TIMEOUT_MS);
+
+    proc.stdout?.on('data', (d) => {
+      stdout += d.toString();
+    });
+    proc.stderr?.on('data', (d) => {
+      stderr += d.toString();
+    });
+
+    proc.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({
+        passed: false,
+        exitCode: null,
+        outputTail: String(err).slice(-500),
+        timedOut: false,
+      });
+    });
+
+    proc.on('exit', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const exitCode = code ?? 1;
+      const invert = !!task.precondition_invert;
+      const passed = invert ? exitCode !== 0 : exitCode === 0;
+      resolve({
+        passed,
+        exitCode,
+        outputTail: (stderr || stdout).slice(-500),
+        timedOut: false,
+      });
+    });
+  });
+}
+
 async function runTask(
   task: ScheduledTask,
   deps: SchedulerDependencies,
@@ -191,6 +308,38 @@ async function runTask(
   // Update tasks snapshot for container to read (filtered by group)
   const isMain = group.isMain === true;
   writeTasksSnapshot(task.group_folder, isMain, buildTaskSnapshotRows());
+
+  // Precondition gate: a cheap bash check runs before we spend an LLM
+  // container. If it doesn't pass, log a 'skipped' run, advance next_run,
+  // and return without firing the real task.
+  if (task.precondition) {
+    const gate = await runPrecondition(task, group, isMain);
+    if (!gate.passed) {
+      const reason = gate.timedOut
+        ? 'precondition timeout'
+        : `precondition gate (exit ${gate.exitCode})`;
+      logger.info(
+        {
+          taskId: task.id,
+          exitCode: gate.exitCode,
+          timedOut: gate.timedOut,
+        },
+        'Task skipped by precondition',
+      );
+      logTaskRun({
+        task_id: task.id,
+        run_at: new Date().toISOString(),
+        duration_ms: Date.now() - startTime,
+        status: 'skipped',
+        result: null,
+        error: gate.outputTail ? `${reason}: ${gate.outputTail}` : reason,
+      });
+      const nextRun = computeNextRun(task);
+      updateTaskAfterRun(task.id, nextRun, `Skipped (${reason})`);
+      return;
+    }
+    logger.info({ taskId: task.id }, 'Precondition passed, firing task');
+  }
 
   let result: string | null = null;
   let error: string | null = null;
@@ -349,7 +498,7 @@ function sweepAutoCompact(deps: SchedulerDependencies): void {
   for (const [chatJid, group] of Object.entries(groups)) {
     try {
       const cfg = resolveGroupAutoCompact(group.folder);
-      if (!cfg.enabled) continue;
+      if (!shouldReadUsageForAutoCompact(cfg, now)) continue;
       const lastActivityAt = deps.queue.getLastActivityAt(chatJid) || null;
       const usage = readUsage(group.folder, chatJid);
       const decision = evaluateGroup({

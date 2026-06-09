@@ -6,7 +6,7 @@
  *
  * Shape:
  *   {
- *     "defaults": { "model": "...", "effort": "high", "tiers": { "opus": "...", "sonnet": "...", "haiku": "..." } },
+ *     "defaults": { "model": "...", "effort": "high", "tiers": { "opus": "...", "sonnet": "...", "haiku": "..." }, "autoCompact": { ... } },
  *     "groups": { "<group-folder>": { "model": "...", "effort": "low|medium|high|max" } }
  *   }
  */
@@ -19,9 +19,21 @@ import { logger } from './logger.js';
 
 export type Effort = 'low' | 'medium' | 'high' | 'max';
 
+export const EFFORT_VALUES: readonly Effort[] = [
+  'low',
+  'medium',
+  'high',
+  'max',
+] as const;
+
 export interface AutoCompactConfig {
   enabled: boolean;
+  idleEnabled: boolean;
   idleMinutes: number;
+  nightlyEnabled: boolean;
+  nightlyUtcHour: number;
+  nightlyWindowMinutes: number;
+  minInputTokens: number;
   cooldownMinutes: number;
 }
 
@@ -57,16 +69,21 @@ const CONFIG_PATH = path.join(
 
 const BUILTIN_DEFAULTS: GroupModelsConfig = {
   defaults: {
-    model: 'claude-opus-4-6',
+    model: 'claude-opus-4-8',
     effort: 'high',
     tiers: {
-      opus: 'claude-opus-4-6',
+      opus: 'claude-opus-4-8',
       sonnet: 'claude-sonnet-4-6',
       haiku: 'claude-haiku-4-5-20251001',
     },
     autoCompact: {
-      enabled: true,
+      enabled: false,
+      idleEnabled: true,
       idleMinutes: 25,
+      nightlyEnabled: false,
+      nightlyUtcHour: 0,
+      nightlyWindowMinutes: 30,
+      minInputTokens: 50_000,
       cooldownMinutes: 10,
     },
   },
@@ -77,7 +94,14 @@ let cached: GroupModelsConfig | null = null;
 let cachedMtime = 0;
 
 function validEffort(v: unknown): v is Effort {
-  return v === 'low' || v === 'medium' || v === 'high' || v === 'max';
+  return (
+    typeof v === 'string' && (EFFORT_VALUES as readonly string[]).includes(v)
+  );
+}
+
+function normalizeEffort(v: unknown): Effort | undefined {
+  if (v === 'xhigh') return 'high';
+  return validEffort(v) ? v : undefined;
 }
 
 function mergeAutoCompact(
@@ -86,12 +110,36 @@ function mergeAutoCompact(
 ): AutoCompactConfig {
   if (!raw || typeof raw !== 'object') return base;
   const r = raw as Partial<AutoCompactConfig>;
+  const nightlyUtcHour =
+    typeof r.nightlyUtcHour === 'number' &&
+    Number.isInteger(r.nightlyUtcHour) &&
+    r.nightlyUtcHour >= 0 &&
+    r.nightlyUtcHour <= 23
+      ? r.nightlyUtcHour
+      : base.nightlyUtcHour;
   return {
     enabled: typeof r.enabled === 'boolean' ? r.enabled : base.enabled,
+    idleEnabled:
+      typeof r.idleEnabled === 'boolean' ? r.idleEnabled : base.idleEnabled,
     idleMinutes:
       typeof r.idleMinutes === 'number' && r.idleMinutes > 0
         ? r.idleMinutes
         : base.idleMinutes,
+    nightlyEnabled:
+      typeof r.nightlyEnabled === 'boolean'
+        ? r.nightlyEnabled
+        : base.nightlyEnabled,
+    nightlyUtcHour,
+    nightlyWindowMinutes:
+      typeof r.nightlyWindowMinutes === 'number' &&
+      r.nightlyWindowMinutes > 0 &&
+      r.nightlyWindowMinutes <= 24 * 60
+        ? r.nightlyWindowMinutes
+        : base.nightlyWindowMinutes,
+    minInputTokens:
+      typeof r.minInputTokens === 'number' && r.minInputTokens >= 0
+        ? r.minInputTokens
+        : base.minInputTokens,
     cooldownMinutes:
       typeof r.cooldownMinutes === 'number' && r.cooldownMinutes >= 0
         ? r.cooldownMinutes
@@ -119,9 +167,8 @@ function loadConfig(): GroupModelsConfig {
     const merged: GroupModelsConfig = {
       defaults: {
         model: defaults.model || BUILTIN_DEFAULTS.defaults.model,
-        effort: validEffort(defaults.effort)
-          ? defaults.effort
-          : BUILTIN_DEFAULTS.defaults.effort,
+        effort:
+          normalizeEffort(defaults.effort) || BUILTIN_DEFAULTS.defaults.effort,
         tiers: {
           opus: tiers.opus || BUILTIN_DEFAULTS.defaults.tiers.opus,
           sonnet: tiers.sonnet || BUILTIN_DEFAULTS.defaults.tiers.sonnet,
@@ -135,7 +182,7 @@ function loadConfig(): GroupModelsConfig {
       const entry = val as GroupModelEntry;
       merged.groups[key] = {
         model: typeof entry.model === 'string' ? entry.model : undefined,
-        effort: validEffort(entry.effort) ? entry.effort : undefined,
+        effort: normalizeEffort(entry.effort),
         autoCompact: entry.autoCompact,
       };
     }
@@ -222,4 +269,39 @@ export function upsertGroupEntry(
   } catch (err) {
     logger.warn({ err, folder }, 'Failed to upsert group-models entry');
   }
+}
+
+/**
+ * Overwrite the effort field for `folder`. Pass `null` to remove the override
+ * (falls back to defaults). Unlike `upsertGroupEntry`, this always wins.
+ * Throws on failure — callers surface the error to the user.
+ */
+export function setGroupEffort(folder: string, effort: Effort | null): void {
+  ensureDir(path.dirname(CONFIG_PATH));
+
+  let raw: { defaults?: unknown; groups?: Record<string, GroupModelEntry> } =
+    {};
+  if (fs.existsSync(CONFIG_PATH)) {
+    raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+  }
+  raw.groups = raw.groups || {};
+  const existing = raw.groups[folder] || {};
+
+  if (effort === null) {
+    const { effort: _e, ...rest } = existing;
+    if (Object.keys(rest).length === 0) {
+      delete raw.groups[folder];
+    } else {
+      raw.groups[folder] = rest;
+    }
+  } else {
+    raw.groups[folder] = { ...existing, effort };
+  }
+
+  const tmp = `${CONFIG_PATH}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(raw, null, 2));
+  fs.renameSync(tmp, CONFIG_PATH);
+  cached = null;
+  cachedMtime = 0;
+  logger.info({ folder, effort }, 'Set group effort');
 }

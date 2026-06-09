@@ -433,7 +433,7 @@ export function getTopRecallCandidates(
       Date.now() - maxAgeDays * 24 * 60 * 60 * 1000,
     ).toISOString();
     const rows = db
-      .prepare('SELECT * FROM recall_entries WHERE first_seen > ?')
+      .prepare('SELECT * FROM recall_entries WHERE last_recalled > ?')
       .all(cutoff) as RawRow[];
     return rows
       .map(rowToEntry)

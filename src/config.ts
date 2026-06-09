@@ -40,7 +40,7 @@ export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 export const CONTAINER_IMAGE =
   process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest';
 export const CONTAINER_TIMEOUT = parseInt(
-  process.env.CONTAINER_TIMEOUT || '1800000',
+  process.env.CONTAINER_TIMEOUT || '3600000',
   10,
 );
 export const CONTAINER_MAX_OUTPUT_SIZE = parseInt(
@@ -55,7 +55,7 @@ export const MAX_MESSAGES_PER_PROMPT = Math.max(
   1,
   parseInt(process.env.MAX_MESSAGES_PER_PROMPT || '10', 10) || 10,
 );
-export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — how long to keep container alive after last result
+export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '3600000', 10); // 60min default — how long to keep container alive after last result
 export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
@@ -117,7 +117,7 @@ export const TIMEZONE = resolveConfigTimezone();
 
 // Default models — overridden by ANTHROPIC_DEFAULT_*_MODEL in .env
 export const MODEL_DEFAULTS: Record<string, string> = {
-  ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-4-6',
+  ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-4-8',
   ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-6',
   ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-haiku-4-5-20251001',
 };

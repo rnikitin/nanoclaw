@@ -228,3 +228,130 @@ URL: `https://ark.nikitin.me/canvas/{group}/{canvas_id}`
 - Агентский JSX выполняется в браузере владельца — аналогично просмотру агентских HTML-файлов
 - Canvas изолирован по группе — агент одной группы не может обновить canvas другой
 - CSP headers для ограничения fetch/eval если нужно
+
+---
+
+## Migration: AG-UI protocol (2026-04-17)
+
+**Решение:** WebSocket wire format мигрирован на [AG-UI protocol](https://github.com/ag-ui-protocol/ag-ui). Hard swap, без backward compatibility.
+
+**Почему:** стандартный event-based контракт → можно подключать off-the-shelf AG-UI клиентов (CopilotKit и т.п.), внешние дашборды, мобильные приложения без переизобретения протокола.
+
+**Область миграции:**
+- ✅ `src/canvas-server.ts` — emit AG-UI events на WebSocket
+- ✅ `canvas-ui/src/canvas-runtime.tsx` — parse AG-UI events
+- ✅ `container/skills/canvas-view/SKILL.md` + `groups/telegram_main/skills/canvas-tasks/canvas-tasks/SKILL.md` — документация
+- ❌ IPC agent↔host (`publish.py`, `publish-tasks.py`, `ipc.ts`) — **не трогаем**, внутренний канал
+
+**Новые протокол сообщений (WS):**
+
+Server → Browser (create/update):
+```json
+{"type":"RunStarted","threadId":"<chatJid>","runId":"<id>"}
+{"type":"Custom","threadId":"<chatJid>","runId":"<id>","name":"nanoclaw.canvas.render","value":{"canvasId":"...","title":"...","jsx":"...","state":{...}}}
+{"type":"RunFinished","threadId":"<chatJid>","runId":"<id>"}
+```
+
+Server → Browser (close):
+```json
+{"type":"Custom","threadId":"...","runId":"...","name":"nanoclaw.canvas.close","value":{"canvasId":"..."}}
+```
+
+Browser → Server:
+```json
+{"type":"Custom","name":"nanoclaw.canvas.interaction","value":{"canvasId":"...","event":"move","data":{"cell":4}}}
+{"type":"Custom","name":"nanoclaw.canvas.subscribe","value":{"canvasId":"..."}}
+{"type":"Custom","name":"nanoclaw.canvas.ping","value":{}}
+```
+
+**Ключевые решения:**
+- **Snapshot-only** — каждый render несёт полный jsx+state; нет StateDelta. Проще для skill-авторов.
+- **Custom namespace** — все nanoclaw-specific события под `nanoclaw.canvas.*`. Стандартные AG-UI events (RunStarted/Finished, Custom) — совместимы с AG-UI SDK.
+- **threadId = chatJid, runId = uuid** — генерируется при каждом broadcast.
+- **Что агент видит** не изменилось — всё ещё `<canvas-event canvas_id="..." type="...">data</canvas-event>`.
+
+---
+
+## Middleware chain (2026-04-17)
+
+**Цель:** перехватывать canvas events до LLM — простые действия (toggle_task, save_comment) обрабатываются скриптами напрямую, сложные передаются агенту. Hot-reloadable per-group.
+
+**Архитектура — Express-style chain:**
+
+```
+Browser → [inbound chain] → storeMessageDirect → LLM
+Agent publish → [outbound chain] → WebSocket broadcast → Browser
+```
+
+Chain направлений:
+- **inbound** — события от браузера (клики, ввод) к агенту
+- **outbound** — события от агента (render/close) к браузеру
+- **both** — handler видит оба направления
+
+**Config per group:** `groups/{group}/canvas-middleware/config.json`
+
+```json
+{
+  "middleware": [
+    {
+      "id": "task-toggle",
+      "direction": "inbound",
+      "priority": 10,
+      "match": {
+        "eventName": "nanoclaw.canvas.interaction",
+        "eventType": "toggle_task",
+        "canvasId": "task-board"
+      },
+      "handler": "handlers/toggle.py",
+      "timeout": 3000
+    }
+  ]
+}
+```
+
+Порядок полей `match` — все опциональны, все должны совпасть (AND-логика). `priority` — lower first; default 100.
+
+**Handler protocol:**
+
+Stdin (JSON):
+```json
+{
+  "direction": "inbound",
+  "group": "telegram_main",
+  "canvasId": "task-board",
+  "eventName": "nanoclaw.canvas.interaction",
+  "eventType": "toggle_task",
+  "value": { "canvasId": "task-board", "event": "toggle_task", "data": { "taskId": "S18" } },
+  "threadId": "...",
+  "runId": "..."
+}
+```
+
+Stdout (JSON):
+```json
+{
+  "next": false,
+  "event": { "value": { "...modified": true } },
+  "sideEffect": { "state": { "tasks": [...] } }
+}
+```
+
+- `next: false` — остановить chain, НЕ передавать в LLM (для inbound) или НЕ broadcast (для outbound)
+- `next: true` (default) — передать следующему middleware / дальше по пути
+- `event.value` — заменить value события для последующей обработки
+- `sideEffect.state` — merge в canvas state + триггернуть re-render (outbound chain с depth+1)
+
+Handler может игнорировать stdout для passthrough (пустой JSON = `{next:true}`).
+
+**Fail-open:** handler exit code ≠ 0 / timeout / invalid JSON → лог warning, продолжить chain как будто handler вернул `{next:true}`. Один сломанный middleware не должен ломать UX.
+
+**Hot reload:** `fs.watch` на `config.json` с debounce 100ms. Добавить/изменить/удалить rule → instant pickup. Без рестарта nanoclaw.
+
+**Recursion guard:** `MAX_CHAIN_DEPTH = 2`. Side-effect `state` → new broadcast с depth+1 → outbound chain снова → если та даёт sideEffect → depth 2 → finalize без следующего цикла middleware.
+
+**Per-group only:** пока нет global middleware. Каждая группа сама настраивает.
+
+**Файлы:**
+- `src/canvas-middleware.ts` — registry, watcher, chain runner, handler spawn
+- `src/canvas-middleware.test.ts` — unit tests (matchMiddleware, runChain, fail-open, depth guard)
+- Интеграция в `src/canvas-server.ts` — hook на inbound (WS interaction) и outbound (broadcastAgUiRender/Close)

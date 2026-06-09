@@ -36,6 +36,8 @@ describe('PromotionScorer', () => {
           '2026-04-03',
           '2026-04-04',
           '2026-04-05',
+          '2026-04-06',
+          '2026-04-07',
         ],
         conceptTags: ['trading', 'strategy', 'momentum', 'llm', 'crypto'],
       });
@@ -80,23 +82,51 @@ describe('PromotionScorer', () => {
       const result = scoreCandidate(entry, DEFAULT_WEIGHTS, {
         ...DEFAULT_THRESHOLDS,
         minScore: 0.5, // lower score threshold to ensure we hit UniqueQueries gate
+        minUniqueQueries: 2, // override default (1) to exercise gate
       });
 
       expect(result.promoted).toBe(false);
       expect(result.reason).toContain('UniqueQueries');
     });
 
-    it('rejects candidate that is too old', () => {
+    it('rejects candidate that has gone stale (last recalled long ago)', () => {
       const entry = makeEntry({
-        firstSeen: new Date(
+        lastRecalled: new Date(
           Date.now() - 60 * 24 * 60 * 60 * 1000,
-        ).toISOString(), // 60 days ago
+        ).toISOString(), // not recalled for 60 days
       });
 
       const result = scoreCandidate(entry);
 
       expect(result.promoted).toBe(false);
-      expect(result.reason).toContain('Too old');
+      expect(result.reason).toContain('Stale');
+    });
+
+    it('promotes long-lived entries that are still being recalled', () => {
+      const entry = makeEntry({
+        firstSeen: new Date(
+          Date.now() - 120 * 24 * 60 * 60 * 1000,
+        ).toISOString(), // first seen 120 days ago
+        lastRecalled: new Date().toISOString(), // but recalled today
+        recallCount: 10,
+        avgScore: 0.95,
+        queryHashes: ['q1', 'q2', 'q3', 'q4', 'q5'],
+        recallDays: [
+          '2026-04-10',
+          '2026-04-11',
+          '2026-04-12',
+          '2026-04-13',
+          '2026-04-14',
+          '2026-04-15',
+          '2026-04-16',
+        ],
+        conceptTags: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'],
+      });
+
+      const result = scoreCandidate(entry);
+
+      expect(result.promoted).toBe(true);
+      expect(result.reason).toBeUndefined();
     });
 
     it('gives higher score to recently recalled entries', () => {
@@ -203,6 +233,8 @@ describe('PromotionScorer', () => {
             '2026-04-03',
             '2026-04-04',
             '2026-04-05',
+            '2026-04-06',
+            '2026-04-07',
           ],
           conceptTags: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'],
         }),

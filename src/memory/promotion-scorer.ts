@@ -42,10 +42,10 @@ export const DEFAULT_WEIGHTS: PromotionWeights = {
 };
 
 export const DEFAULT_THRESHOLDS: PromotionThresholds = {
-  minScore: 0.8,
-  minRecallCount: 3,
-  minUniqueQueries: 3,
-  minRecallDays: 2,
+  minScore: 0.6,
+  minRecallCount: 2,
+  minUniqueQueries: 1,
+  minRecallDays: 7,
   maxAgeDays: 30,
 };
 
@@ -63,17 +63,19 @@ export function scoreCandidate(
   phaseBoost = 0,
 ): ScoredCandidate {
   const now = Date.now();
-  const ageMs = now - new Date(entry.firstSeen).getTime();
-  const ageDays = ageMs / (24 * 60 * 60 * 1000);
+  const stalenessMs = now - new Date(entry.lastRecalled).getTime();
+  const stalenessDays = stalenessMs / (24 * 60 * 60 * 1000);
 
-  // Skip if too old
-  if (ageDays > thresholds.maxAgeDays) {
+  // Skip entries that have gone stale (not recalled recently).
+  // Age since firstSeen is intentionally ignored so long-lived, continually-recalled
+  // entries remain promotion candidates.
+  if (stalenessDays > thresholds.maxAgeDays) {
     return {
       entry,
       score: 0,
       breakdown: {},
       promoted: false,
-      reason: `Too old: ${ageDays.toFixed(0)} days > ${thresholds.maxAgeDays}`,
+      reason: `Stale: last recalled ${stalenessDays.toFixed(0)} days ago > ${thresholds.maxAgeDays}`,
     };
   }
 

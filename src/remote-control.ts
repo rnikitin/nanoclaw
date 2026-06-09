@@ -22,6 +22,8 @@ const URL_POLL_MS = 200;
 const STATE_FILE = path.join(DATA_DIR, 'remote-control.json');
 const STDOUT_FILE = path.join(DATA_DIR, 'remote-control.stdout');
 const STDERR_FILE = path.join(DATA_DIR, 'remote-control.stderr');
+const CLAUDE_CODE_AUTO_COMPACT_WINDOW = '198000';
+const CLAUDE_CODE_DISABLE_1M_CONTEXT = '1';
 
 function saveState(session: RemoteControlSession): void {
   ensureDir(path.dirname(STATE_FILE));
@@ -114,6 +116,11 @@ export async function startRemoteControl(
       cwd,
       stdio: ['pipe', stdoutFd, stderrFd],
       detached: true,
+      env: {
+        ...process.env,
+        CLAUDE_CODE_AUTO_COMPACT_WINDOW,
+        CLAUDE_CODE_DISABLE_1M_CONTEXT,
+      },
     });
   } catch (err: any) {
     fs.closeSync(stdoutFd);

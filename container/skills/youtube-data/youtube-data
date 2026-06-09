@@ -1,0 +1,713 @@
+#!/usr/bin/env python3
+"""Unified CLI over YouTube Data API v3.
+
+Subcommands: search, channel, latest, video, playlist, comments.
+Reads YOUTUBE_API_KEY from env.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta, timezone
+
+
+BASE = 'https://www.googleapis.com/youtube/v3'
+
+
+# ----- HTTP -----
+
+def api_get(path: str, params: dict, key: str) -> dict:
+    params = {**params, 'key': key}
+    url = f'{BASE}/{path}?{urllib.parse.urlencode(params)}'
+    req = urllib.request.Request(url, method='GET')
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode('utf-8', errors='replace')[:2000]
+        raise SystemExit(f'YouTube API HTTP {e.code} on {path}: {body}')
+
+
+# ----- Parsing helpers -----
+
+def parse_since(s: str) -> str:
+    """'7d' / '24h' / '2w' / RFC 3339 -> RFC 3339 timestamp."""
+    if not s:
+        return ''
+    m = re.fullmatch(r'(\d+)([smhdw])', s.strip())
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        mult = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800}[unit]
+        dt = datetime.now(timezone.utc) - timedelta(seconds=n * mult)
+        return dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+    return s
+
+
+def duration_arg_to_seconds(s: str) -> int:
+    m = re.fullmatch(r'(\d+)([smhdw])', s.strip())
+    if not m:
+        raise SystemExit(f'Invalid duration: {s!r}. Use forms like 30s, 5m, 2h, 1d.')
+    n, unit = int(m.group(1)), m.group(2)
+    mult = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, 'w': 604800}[unit]
+    return n * mult
+
+
+def iso_to_seconds(iso: str) -> int:
+    """PT2H53M21S -> total seconds. -1 on parse failure."""
+    if not iso.startswith('PT'):
+        return -1
+    rest = iso[2:]
+    h = m = s = 0
+    cur = ''
+    for ch in rest:
+        if ch.isdigit():
+            cur += ch
+        elif ch == 'H':
+            h = int(cur or '0'); cur = ''
+        elif ch == 'M':
+            m = int(cur or '0'); cur = ''
+        elif ch == 'S':
+            s = int(cur or '0'); cur = ''
+        else:
+            return -1
+    return h * 3600 + m * 60 + s
+
+
+def pretty_duration(iso: str) -> str:
+    if not iso.startswith('PT'):
+        return iso
+    secs = iso_to_seconds(iso)
+    if secs < 0:
+        return iso
+    h, rem = divmod(secs, 3600)
+    m, s = divmod(rem, 60)
+    parts = []
+    if h: parts.append(f'{h}h')
+    if m: parts.append(f'{m}m')
+    if s or not parts: parts.append(f'{s}s')
+    return ' '.join(parts)
+
+
+def truncate(s: str, n: int) -> str:
+    if not s:
+        return ''
+    s = ' '.join(s.split())
+    return s if len(s) <= n else s[:n].rstrip() + '…'
+
+
+# ----- Resolvers -----
+
+def extract_video_id(arg: str) -> str | None:
+    a = arg.strip()
+    if re.fullmatch(r'[A-Za-z0-9_-]{11}', a):
+        return a
+    m = re.search(
+        r'(?:youtu\.be/|youtube\.com/watch\?v=|youtube\.com/shorts/|youtube\.com/live/)([A-Za-z0-9_-]{11})',
+        a,
+    )
+    return m.group(1) if m else None
+
+
+def resolve_channel_id(arg: str, key: str) -> str:
+    a = arg.strip()
+
+    if re.fullmatch(r'UC[A-Za-z0-9_-]{22}', a):
+        return a
+
+    m = re.search(r'youtube\.com/channel/(UC[A-Za-z0-9_-]{22})', a)
+    if m:
+        return m.group(1)
+
+    m = re.search(r'youtube\.com/@([A-Za-z0-9._-]+)', a)
+    if m:
+        a = '@' + m.group(1)
+
+    m = re.search(r'youtube\.com/(?:c|user)/([A-Za-z0-9._-]+)', a)
+    if m:
+        a = m.group(1)
+
+    vid = extract_video_id(a)
+    if vid:
+        d = api_get('videos', {'part': 'snippet', 'id': vid}, key)
+        items = d.get('items', [])
+        if not items:
+            raise SystemExit(f'Video not found: {vid}')
+        return items[0]['snippet']['channelId']
+
+    handle = a.lstrip('@')
+    d = api_get('channels', {'part': 'id', 'forHandle': '@' + handle}, key)
+    items = d.get('items', [])
+    if items:
+        return items[0]['id']
+
+    d = api_get('search', {'part': 'snippet', 'type': 'channel', 'q': handle, 'maxResults': '1'}, key)
+    items = d.get('items', [])
+    if items:
+        return items[0]['snippet']['channelId']
+
+    raise SystemExit(f'Could not resolve channel from input: {arg!r}')
+
+
+# ----- Subcommands -----
+
+def cmd_search(args, key) -> int:
+    n = max(1, min(50, args.max_results))
+    params = {
+        'part': 'snippet',
+        'type': 'video',
+        'q': args.query,
+        'maxResults': str(n),
+        'order': args.order,
+    }
+    if args.lang: params['relevanceLanguage'] = args.lang
+    if args.region: params['regionCode'] = args.region
+    if args.published_after: params['publishedAfter'] = args.published_after
+    if args.published_before: params['publishedBefore'] = args.published_before
+
+    data = api_get('search', params, key)
+    if args.as_json:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+        return 0
+
+    items = data.get('items', [])
+    if not items:
+        print('No results.')
+        return 0
+    for i, item in enumerate(items, 1):
+        sn = item.get('snippet', {})
+        vid = item.get('id', {}).get('videoId', '')
+        print(f'{i}. {sn.get("title", "")}')
+        print(f'   url:         https://www.youtube.com/watch?v={vid}')
+        print(f'   channel:     {sn.get("channelTitle", "")}')
+        print(f'   published:   {sn.get("publishedAt", "")}')
+        desc = truncate(sn.get('description', ''), 200)
+        if desc:
+            print(f'   description: {desc}')
+        print()
+    return 0
+
+
+def cmd_channel(args, key) -> int:
+    cid = resolve_channel_id(args.channel, key)
+    d = api_get('channels', {
+        'part': 'snippet,statistics,brandingSettings,contentDetails',
+        'id': cid,
+    }, key)
+    items = d.get('items', [])
+    if not items:
+        raise SystemExit(f'Channel not found: {cid}')
+    if args.as_json:
+        print(json.dumps(items[0], ensure_ascii=False, indent=2))
+        return 0
+    it = items[0]
+    sn = it.get('snippet', {})
+    st = it.get('statistics', {})
+    br = it.get('brandingSettings', {}).get('channel', {})
+    uploads = it.get('contentDetails', {}).get('relatedPlaylists', {}).get('uploads', '')
+    print(f'Title:        {sn.get("title", "")}')
+    print(f'Handle:       {sn.get("customUrl", "")}')
+    print(f'ChannelId:    {it.get("id", "")}')
+    print(f'Subscribers:  {st.get("subscriberCount", "?")}')
+    print(f'Videos:       {st.get("videoCount", "?")}')
+    print(f'Total views:  {st.get("viewCount", "?")}')
+    print(f'Country:      {sn.get("country", br.get("country", ""))}')
+    print(f'Uploads PL:   {uploads}')
+    print(f'Published:    {sn.get("publishedAt", "")}')
+    print()
+    desc = truncate(sn.get('description', ''), 600)
+    if desc:
+        print('Description:')
+        print(desc)
+    return 0
+
+
+def cmd_latest(args, key) -> int:
+    n = max(1, min(50, args.max_results))
+    since_iso = parse_since(args.since) if args.since else ''
+
+    cid = resolve_channel_id(args.channel, key)
+    ch = api_get('channels', {'part': 'snippet,contentDetails', 'id': cid}, key)
+    if not ch.get('items'):
+        raise SystemExit(f'Channel not found: {cid}')
+    ch_item = ch['items'][0]
+    channel_title = ch_item['snippet']['title']
+    uploads_pl = ch_item['contentDetails']['relatedPlaylists']['uploads']
+
+    fetch = min(50, max(n * 2, 10))
+    pl = api_get('playlistItems', {
+        'part': 'snippet,contentDetails',
+        'playlistId': uploads_pl,
+        'maxResults': str(fetch),
+    }, key)
+    raw_items = pl.get('items', [])
+
+    video_ids = [
+        it['contentDetails']['videoId']
+        for it in raw_items
+        if it.get('contentDetails', {}).get('videoId')
+    ]
+    enriched: dict[str, dict] = {}
+    if video_ids:
+        vids = api_get('videos', {
+            'part': 'snippet,contentDetails,liveStreamingDetails',
+            'id': ','.join(video_ids[:50]),
+        }, key)
+        for v in vids.get('items', []):
+            enriched[v['id']] = v
+
+    min_sec = duration_arg_to_seconds(args.min_duration) if args.min_duration else None
+    max_sec = duration_arg_to_seconds(args.max_duration) if args.max_duration else None
+
+    out = []
+    for it in raw_items:
+        vid = it['contentDetails']['videoId']
+        sn = it['snippet']
+        published = sn.get('publishedAt', '')
+        if since_iso and published < since_iso:
+            continue
+        ev = enriched.get(vid, {})
+        live_state = ev.get('snippet', {}).get('liveBroadcastContent', 'none')
+        if args.skip_live and live_state in ('live', 'upcoming'):
+            continue
+        duration = ev.get('contentDetails', {}).get('duration', '')
+        dur_sec = iso_to_seconds(duration) if duration else -1
+        if min_sec is not None and dur_sec >= 0 and dur_sec < min_sec:
+            continue
+        if max_sec is not None and dur_sec >= 0 and dur_sec > max_sec:
+            continue
+        out.append({
+            'videoId': vid,
+            'url': f'https://www.youtube.com/watch?v={vid}',
+            'title': sn.get('title', ''),
+            'publishedAt': published,
+            'duration': duration,
+            'liveBroadcastContent': live_state,
+        })
+        if len(out) >= n:
+            break
+
+    payload = {'channelId': cid, 'channelTitle': channel_title, 'items': out}
+    if args.as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    if not out:
+        print(f'No matching videos for channel {channel_title} ({cid}).')
+        return 0
+    print(f'Channel: {channel_title} ({cid})')
+    print()
+    for i, v in enumerate(out, 1):
+        print(f'{i}. {v["title"]}')
+        print(f'   url:        {v["url"]}')
+        print(f'   published:  {v["publishedAt"]}')
+        if v['duration']:
+            print(f'   duration:   {pretty_duration(v["duration"])}')
+        print(f'   live:       {v["liveBroadcastContent"]}')
+        print()
+    return 0
+
+
+def cmd_video(args, key) -> int:
+    vid = extract_video_id(args.video)
+    if not vid:
+        raise SystemExit(f'Could not extract video id from {args.video!r}')
+    d = api_get('videos', {
+        'part': 'snippet,statistics,contentDetails,liveStreamingDetails,status',
+        'id': vid,
+    }, key)
+    items = d.get('items', [])
+    if not items:
+        raise SystemExit(f'Video not found: {vid}')
+    if args.as_json:
+        print(json.dumps(items[0], ensure_ascii=False, indent=2))
+        return 0
+    it = items[0]
+    sn = it.get('snippet', {})
+    st = it.get('statistics', {})
+    cd = it.get('contentDetails', {})
+    ls = it.get('liveStreamingDetails', {})
+    print(f'Title:        {sn.get("title", "")}')
+    print(f'Channel:      {sn.get("channelTitle", "")}')
+    print(f'ChannelId:    {sn.get("channelId", "")}')
+    print(f'Published:    {sn.get("publishedAt", "")}')
+    duration = cd.get('duration', '')
+    if duration:
+        print(f'Duration:     {pretty_duration(duration)}  ({duration})')
+    print(f'Views:        {st.get("viewCount", "?")}')
+    print(f'Likes:        {st.get("likeCount", "?")}')
+    print(f'Comments:     {st.get("commentCount", "?")}')
+    live_state = sn.get('liveBroadcastContent', 'none')
+    print(f'Live state:   {live_state}')
+    if ls:
+        if ls.get('actualStartTime'):
+            print(f'Live start:   {ls.get("actualStartTime")}')
+        if ls.get('actualEndTime'):
+            print(f'Live end:     {ls.get("actualEndTime")}')
+        if ls.get('scheduledStartTime'):
+            print(f'Scheduled:    {ls.get("scheduledStartTime")}')
+    if sn.get('defaultLanguage') or sn.get('defaultAudioLanguage'):
+        print(f'Language:     {sn.get("defaultLanguage") or sn.get("defaultAudioLanguage")}')
+    if cd.get('caption') == 'true':
+        print('Captions:     yes')
+    print(f'URL:          https://www.youtube.com/watch?v={vid}')
+    print()
+    desc = truncate(sn.get('description', ''), 800)
+    if desc:
+        print('Description:')
+        print(desc)
+    return 0
+
+
+def cmd_playlist(args, key) -> int:
+    n = max(1, min(50, args.max_results))
+    d = api_get('playlistItems', {
+        'part': 'snippet,contentDetails',
+        'playlistId': args.playlist,
+        'maxResults': str(n),
+    }, key)
+    if args.as_json:
+        print(json.dumps(d, ensure_ascii=False, indent=2))
+        return 0
+    items = d.get('items', [])
+    if not items:
+        print('Empty or invalid playlist.')
+        return 0
+    for i, it in enumerate(items, 1):
+        sn = it.get('snippet', {})
+        vid = it.get('contentDetails', {}).get('videoId', '')
+        print(f'{i}. {sn.get("title", "")}')
+        print(f'   url:        https://www.youtube.com/watch?v={vid}')
+        print(f'   published:  {sn.get("publishedAt", "")}')
+        if 'position' in sn:
+            print(f'   position:   {sn["position"]}')
+        print()
+    return 0
+
+
+def cmd_transcript(args, _key_unused) -> int:
+    """Download a video's transcript without Gemini.
+
+    Tries youtube-transcript-api first (no auth, no cookies — works from
+    non-cloud IPs). Falls back to `yt-dlp --write-auto-subs` with cookies
+    if --ytdlp-cookies is provided (or auto-found in standard paths).
+    """
+    vid = extract_video_id(args.video)
+    if not vid:
+        raise SystemExit(f'Could not extract video id from {args.video!r}')
+
+    langs = [s.strip() for s in (args.lang or 'ru,en').split(',') if s.strip()]
+    snippets = None
+    used_source = None
+    used_lang = None
+    used_kind = None  # 'manual' | 'generated'
+
+    # 1) youtube-transcript-api path
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        api = YouTubeTranscriptApi()
+        fetched = api.fetch(vid, languages=langs)
+        snippets = list(fetched)
+        used_source = 'youtube-transcript-api'
+        used_lang = getattr(fetched, 'language_code', None) or langs[0]
+        used_kind = 'generated' if getattr(fetched, 'is_generated', False) else 'manual'
+    except ImportError:
+        print('Note: youtube-transcript-api not installed; skipping that path.', file=sys.stderr)
+    except Exception as e:
+        cls = type(e).__name__
+        msg = str(e).splitlines()[0] if str(e) else cls
+        print(f'youtube-transcript-api failed: {cls}: {msg}', file=sys.stderr)
+
+    # 2) yt-dlp fallback
+    if snippets is None and not args.no_ytdlp:
+        cookies = args.ytdlp_cookies
+        if not cookies:
+            for cand in (
+                '/workspace/global/.yt-cookies.txt',
+                os.path.expanduser('~/.yt-cookies.txt'),
+            ):
+                if os.path.isfile(cand):
+                    cookies = cand
+                    break
+        snippets, used_lang, used_kind = _ytdlp_fetch_subs(vid, langs, cookies)
+        if snippets is not None:
+            used_source = 'yt-dlp'
+
+    if snippets is None:
+        msg = (
+            f'No transcript available for {vid}. '
+            f'youtube-transcript-api blocked (likely datacenter IP) and yt-dlp had no usable cookies.\n'
+            f'Fix: drop fresh cookies at /workspace/group/.yt-cookies.txt and retry.'
+        )
+        print(msg, file=sys.stderr)
+        return 1
+
+    if args.as_json:
+        print(json.dumps({
+            'videoId': vid,
+            'language': used_lang,
+            'kind': used_kind,
+            'source': used_source,
+            'snippets': [
+                {'start': s['start'], 'duration': s.get('duration', 0), 'text': s['text']}
+                for s in snippets
+            ],
+        }, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.timestamps:
+        for s in snippets:
+            t = int(s['start'])
+            mm, ss = divmod(t, 60)
+            hh, mm = divmod(mm, 60)
+            ts = f'{hh:02d}:{mm:02d}:{ss:02d}' if hh else f'{mm:02d}:{ss:02d}'
+            text = s['text'].replace('\n', ' ').strip()
+            print(f'[{ts}] {text}')
+    else:
+        print(' '.join(s['text'].replace('\n', ' ').strip() for s in snippets))
+    return 0
+
+
+def _ytdlp_fetch_subs(vid: str, langs: list[str], cookies: str | None) -> tuple[list[dict] | None, str | None, str | None]:
+    """Run yt-dlp to grab auto-subs, return list of {start,duration,text} or None."""
+    import subprocess
+    import tempfile
+    import shutil
+
+    binaries = []
+    for cand in ('/workspace/group/bin/yt-dlp', shutil.which('yt-dlp') or ''):
+        if cand and os.path.isfile(cand):
+            binaries.append(cand)
+            break
+    if not binaries:
+        print('yt-dlp not found on PATH or /workspace/group/bin/', file=sys.stderr)
+        return None, None, None
+    ytdlp = binaries[0]
+
+    sub_langs = ','.join(f'{l}.*' for l in langs) + ',orig'
+    with tempfile.TemporaryDirectory() as tmp:
+        cmd = [
+            ytdlp,
+            '--skip-download',
+            '--write-subs', '--write-auto-subs',
+            '--sub-langs', sub_langs,
+            '--sub-format', 'json3/vtt/best',
+            '--ignore-no-formats-error',
+            '-o', f'{tmp}/%(id)s.%(ext)s',
+            f'https://www.youtube.com/watch?v={vid}',
+        ]
+        if cookies:
+            cmd[1:1] = ['--cookies', cookies]
+        deno = '/workspace/group/bin/deno'
+        if os.path.isfile(deno):
+            cmd[1:1] = ['--js-runtimes', f'deno:{deno}']
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            print('yt-dlp timed out.', file=sys.stderr)
+            return None, None, None
+        if proc.returncode != 0:
+            tail = (proc.stderr or '').strip().splitlines()
+            print('yt-dlp failed:', '\n'.join(tail[-5:]), file=sys.stderr)
+            return None, None, None
+        # Pick a subtitle file. Prefer manual over auto-generated, prefer langs in order.
+        files = sorted(os.listdir(tmp))
+        chosen = None
+        chosen_lang = None
+        chosen_kind = None
+        # ext priority: json3 (structured), then vtt
+        for ext in ('json3', 'vtt'):
+            # manual first, then auto-generated
+            for kind_tag, kind_name in (('', 'manual'), ('-orig', 'auto'), ('.orig', 'auto')):
+                for lang in langs + ['']:
+                    for f in files:
+                        if not f.endswith(f'.{ext}'):
+                            continue
+                        if lang and f'.{lang}' not in f:
+                            continue
+                        if kind_tag and kind_tag not in f:
+                            continue
+                        chosen = os.path.join(tmp, f)
+                        chosen_lang = lang or 'unknown'
+                        chosen_kind = kind_name
+                        break
+                    if chosen:
+                        break
+                if chosen:
+                    break
+            if chosen:
+                break
+        if not chosen:
+            print(f'yt-dlp produced no usable subtitles. Files: {files}', file=sys.stderr)
+            return None, None, None
+        return _parse_subtitle_file(chosen), chosen_lang, chosen_kind
+
+
+def _parse_subtitle_file(path: str) -> list[dict]:
+    """Parse json3 or VTT into [{start,duration,text}, ...]."""
+    if path.endswith('.json3'):
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+        out = []
+        for ev in data.get('events', []):
+            segs = ev.get('segs') or []
+            text = ''.join(s.get('utf8', '') for s in segs).strip()
+            if not text:
+                continue
+            out.append({
+                'start': (ev.get('tStartMs') or 0) / 1000.0,
+                'duration': (ev.get('dDurationMs') or 0) / 1000.0,
+                'text': text,
+            })
+        return out
+    # VTT
+    out = []
+    with open(path, encoding='utf-8') as f:
+        lines = f.read().splitlines()
+    i = 0
+    ts_re = re.compile(r'(\d{2}:\d{2}:\d{2}\.\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}\.\d{3})')
+    def _to_s(t: str) -> float:
+        h, m, rest = t.split(':')
+        return int(h) * 3600 + int(m) * 60 + float(rest)
+    while i < len(lines):
+        m = ts_re.search(lines[i])
+        if not m:
+            i += 1
+            continue
+        start = _to_s(m.group(1))
+        end = _to_s(m.group(2))
+        text_lines = []
+        i += 1
+        while i < len(lines) and lines[i].strip():
+            text_lines.append(re.sub(r'<[^>]+>', '', lines[i]).strip())
+            i += 1
+        text = ' '.join(t for t in text_lines if t)
+        if text:
+            out.append({'start': start, 'duration': end - start, 'text': text})
+    # VTT auto-subs have huge duplicate overlap; dedupe trailing repeats
+    deduped = []
+    for s in out:
+        if deduped and s['text'] == deduped[-1]['text']:
+            deduped[-1]['duration'] = (s['start'] + s['duration']) - deduped[-1]['start']
+            continue
+        deduped.append(s)
+    return deduped
+
+
+def cmd_comments(args, key) -> int:
+    vid = extract_video_id(args.video)
+    if not vid:
+        raise SystemExit(f'Could not extract video id from {args.video!r}')
+    n = max(1, min(100, args.max_results))
+    d = api_get('commentThreads', {
+        'part': 'snippet',
+        'videoId': vid,
+        'maxResults': str(n),
+        'order': args.order,
+        'textFormat': 'plainText',
+    }, key)
+    if args.as_json:
+        print(json.dumps(d, ensure_ascii=False, indent=2))
+        return 0
+    items = d.get('items', [])
+    if not items:
+        print('No comments.')
+        return 0
+    for i, it in enumerate(items, 1):
+        top = it['snippet']['topLevelComment']['snippet']
+        print(f'{i}. {top.get("authorDisplayName", "")}  '
+              f'(♥ {top.get("likeCount", 0)}, replies {it["snippet"].get("totalReplyCount", 0)})')
+        print(f'   {truncate(top.get("textDisplay", ""), 400)}')
+        print()
+    return 0
+
+
+# ----- Argparse wiring -----
+
+def main() -> int:
+    p = argparse.ArgumentParser(
+        prog='youtube-data',
+        description='Unified CLI over the YouTube Data API v3.',
+    )
+    sub = p.add_subparsers(dest='cmd', required=True)
+
+    s = sub.add_parser('search', help='Free-text video search (100 quota)')
+    s.add_argument('query')
+    s.add_argument('-n', '--max-results', type=int, default=5)
+    s.add_argument('--order', default='relevance',
+                   choices=['relevance', 'date', 'viewCount', 'rating', 'title'])
+    s.add_argument('--lang', default=None)
+    s.add_argument('--region', default=None)
+    s.add_argument('--published-after', default=None)
+    s.add_argument('--published-before', default=None)
+    s.add_argument('--json', dest='as_json', action='store_true')
+    s.set_defaults(fn=cmd_search)
+
+    c = sub.add_parser('channel', help='Channel info (1 quota)')
+    c.add_argument('channel', help='channelId / @handle / channel URL / video URL')
+    c.add_argument('--json', dest='as_json', action='store_true')
+    c.set_defaults(fn=cmd_channel)
+
+    l = sub.add_parser('latest', help='Newest videos from a channel (2-3 quota)')
+    l.add_argument('channel', help='channelId / @handle / channel URL / video URL')
+    l.add_argument('-n', '--max-results', type=int, default=5)
+    l.add_argument('--since', default=None,
+                   help='Drop videos older than this. e.g. 7d, 24h, 2w.')
+    l.add_argument('--skip-live', action='store_true',
+                   help='Drop in-progress or upcoming livestreams.')
+    l.add_argument('--min-duration', default=None,
+                   help='Drop videos shorter than this. Use 5m to filter Shorts.')
+    l.add_argument('--max-duration', default=None)
+    l.add_argument('--json', dest='as_json', action='store_true')
+    l.set_defaults(fn=cmd_latest)
+
+    v = sub.add_parser('video', help='Single video details (1 quota)')
+    v.add_argument('video', help='videoId or any YouTube URL')
+    v.add_argument('--json', dest='as_json', action='store_true')
+    v.set_defaults(fn=cmd_video)
+
+    pl = sub.add_parser('playlist', help='Items in a playlist (1 quota)')
+    pl.add_argument('playlist', help='Playlist id')
+    pl.add_argument('-n', '--max-results', type=int, default=20)
+    pl.add_argument('--json', dest='as_json', action='store_true')
+    pl.set_defaults(fn=cmd_playlist)
+
+    tr = sub.add_parser('transcript',
+                        help='Download a video transcript via youtube-transcript-api, with yt-dlp fallback. No Data API quota.')
+    tr.add_argument('video', help='videoId or any YouTube URL')
+    tr.add_argument('--lang', default='ru,en',
+                    help='Comma-separated language priority list (default: ru,en).')
+    tr.add_argument('--timestamps', action='store_true',
+                    help='Prepend each line with [HH:MM:SS] for readability.')
+    tr.add_argument('--ytdlp-cookies', default=None,
+                    help='Path to Netscape-format cookies for yt-dlp fallback. '
+                         'Defaults to /workspace/group/.yt-cookies.txt then ~/.yt-cookies.txt.')
+    tr.add_argument('--no-ytdlp', action='store_true',
+                    help='Disable the yt-dlp fallback entirely (transcript-api only).')
+    tr.add_argument('--json', dest='as_json', action='store_true')
+    tr.set_defaults(fn=cmd_transcript)
+
+    cm = sub.add_parser('comments', help='Top-level comments on a video (1 quota)')
+    cm.add_argument('video', help='videoId or any YouTube URL')
+    cm.add_argument('-n', '--max-results', type=int, default=20)
+    cm.add_argument('--order', default='relevance', choices=['relevance', 'time'])
+    cm.add_argument('--json', dest='as_json', action='store_true')
+    cm.set_defaults(fn=cmd_comments)
+
+    args = p.parse_args()
+    # transcript doesn't hit the Data API, so it doesn't need the key.
+    if args.cmd == 'transcript':
+        return args.fn(args, '')
+    key = os.environ.get('YOUTUBE_API_KEY', '').strip()
+    if not key:
+        print('YOUTUBE_API_KEY is not set in the environment.', file=sys.stderr)
+        return 2
+    return args.fn(args, key)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

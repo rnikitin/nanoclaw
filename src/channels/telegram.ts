@@ -95,6 +95,38 @@ export function toMarkdownV2(input: string): string {
 }
 
 /**
+ * Extract reply_to fields from a Telegram message if it quotes another.
+ */
+function extractReplyTo(msg: any): {
+  reply_to_message_id?: string;
+  reply_to_message_content?: string;
+  reply_to_sender_name?: string;
+} {
+  const r = msg?.reply_to_message;
+  if (!r) return {};
+  const name =
+    r.from?.first_name ||
+    r.from?.username ||
+    r.from?.id?.toString() ||
+    'Unknown';
+  const content =
+    r.text ||
+    r.caption ||
+    (r.photo ? '[Photo]' : '') ||
+    (r.video ? '[Video]' : '') ||
+    (r.voice ? '[Voice]' : '') ||
+    (r.audio ? '[Audio]' : '') ||
+    (r.document ? '[Document]' : '') ||
+    (r.sticker ? `[Sticker ${r.sticker.emoji || ''}]` : '') ||
+    '';
+  return {
+    reply_to_message_id: r.message_id?.toString(),
+    reply_to_message_content: content,
+    reply_to_sender_name: name,
+  };
+}
+
+/**
  * Send a message with Telegram MarkdownV2 parse mode, falling back to plain text.
  */
 async function sendTelegramMessage(
@@ -261,6 +293,7 @@ export class TelegramChannel implements Channel {
         content,
         timestamp,
         is_from_me: sender === this.ownerUserId,
+        ...extractReplyTo(ctx.message),
       });
 
       logger.info(
@@ -300,6 +333,7 @@ export class TelegramChannel implements Channel {
         content: `${placeholder}${caption}`,
         timestamp,
         is_from_me: (ctx.from?.id?.toString() || '') === this.ownerUserId,
+        ...extractReplyTo(ctx.message),
       });
     };
 
@@ -347,6 +381,7 @@ export class TelegramChannel implements Channel {
             content: result.content,
             timestamp,
             is_from_me: (ctx.from?.id?.toString() || '') === this.ownerUserId,
+            ...extractReplyTo(ctx.message),
           });
           logger.info({ chatJid }, 'Telegram photo processed for vision');
           return;
@@ -442,6 +477,7 @@ export class TelegramChannel implements Channel {
             content: `[Voice: ${transcript}]${caption}`,
             timestamp,
             is_from_me: (ctx.from?.id?.toString() || '') === this.ownerUserId,
+            ...extractReplyTo(ctx.message),
           });
           logger.info({ chatJid }, 'Telegram voice message transcribed');
           return;
@@ -451,7 +487,86 @@ export class TelegramChannel implements Channel {
       }
       storeNonText(ctx, '[Voice message]');
     });
-    this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
+    this.bot.on('message:audio', async (ctx) => {
+      const audio = ctx.message.audio;
+      const sizeBytes = audio?.file_size || 0;
+      const MAX_DOWNLOAD_SIZE = 20 * 1024 * 1024;
+      const ext = audio?.mime_type?.includes('mpeg') ? 'mp3' : 'm4a';
+      const name = audio?.file_name || `audio_${ctx.message.message_id}.${ext}`;
+
+      if (sizeBytes > MAX_DOWNLOAD_SIZE) {
+        storeNonText(
+          ctx,
+          `[Audio: ${name} (${(sizeBytes / 1024 / 1024).toFixed(1)} MB — too large)]`,
+        );
+        return;
+      }
+
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) {
+        storeNonText(ctx, `[Audio: ${name}]`);
+        return;
+      }
+
+      try {
+        const file = await ctx.api.getFile(audio!.file_id);
+        const downloadUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
+        const res = await fetch(downloadUrl);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buffer = Buffer.from(await res.arrayBuffer());
+
+        const groupDir = resolveGroupFolderPath(group.folder);
+        const attachDir = path.join(groupDir, 'attachments');
+        ensureDir(attachDir);
+        const localPath = path.join(attachDir, name);
+        fs.writeFileSync(localPath, buffer);
+
+        const transcript = await transcribeAudio(buffer, name);
+        const containerPath = `/workspace/group/attachments/${name}`;
+        const caption = ctx.message.caption ? ` ${ctx.message.caption}` : '';
+        const timestamp = new Date(ctx.message.date * 1000).toISOString();
+        const senderName =
+          ctx.from?.first_name ||
+          ctx.from?.username ||
+          ctx.from?.id?.toString() ||
+          'Unknown';
+        const isGroup =
+          ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+        this.opts.onChatMetadata(
+          chatJid,
+          timestamp,
+          undefined,
+          'telegram',
+          isGroup,
+        );
+        const content = transcript
+          ? `[Audio: ${name} → ${containerPath}: ${transcript}]${caption}`
+          : `[Audio: ${name} → ${containerPath}]${caption}`;
+        this.opts.onMessage(chatJid, {
+          id: ctx.message.message_id.toString(),
+          chat_jid: chatJid,
+          sender: ctx.from?.id?.toString() || '',
+          sender_name: senderName,
+          content,
+          timestamp,
+          is_from_me: (ctx.from?.id?.toString() || '') === this.ownerUserId,
+          ...extractReplyTo(ctx.message),
+        });
+        logger.info(
+          { chatJid, name, localPath, transcribed: !!transcript },
+          transcript
+            ? 'Telegram audio transcribed'
+            : 'Telegram audio downloaded',
+        );
+      } catch (err) {
+        logger.error(
+          { chatJid, name, err },
+          'Failed to process Telegram audio',
+        );
+        storeNonText(ctx, `[Audio: ${name}]`);
+      }
+    });
     this.bot.on('message:document', async (ctx) => {
       const doc = ctx.message.document;
       const name = doc?.file_name || 'file';

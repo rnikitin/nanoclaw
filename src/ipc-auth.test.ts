@@ -55,6 +55,7 @@ beforeEach(() => {
     sendMessage: async () => {},
     sendFile: async () => {},
     registeredGroups: () => groups,
+    isActiveInFolder: () => false,
     registerGroup: (jid, group) => {
       groups[jid] = group;
       setRegisteredGroup(jid, group);

@@ -2,11 +2,11 @@
  * Pure logic: should we fire /compact for this group right now?
  *
  * Token-based trigger is delegated to the SDK via
- * CLAUDE_CODE_AUTO_COMPACT_WINDOW — fires in-process at ~76% of context.
- * This sweeper only handles the idle case the SDK can't see.
+ * CLAUDE_CODE_AUTO_COMPACT_WINDOW.
  *
  * Decides based on:
- *   - idle:   now - lastActivityAt exceeds idleMinutes (and tokens > 0)
+ *   - nightly: during the configured UTC window and inputTokens >= minInputTokens
+ *   - idle:    now - lastActivityAt exceeds idleMinutes and inputTokens >= minInputTokens
  *   - cooldown: suppress if we fired within cooldownMinutes
  *
  * Called from the scheduler loop every SCHEDULER_POLL_INTERVAL (60s).
@@ -33,7 +33,7 @@ export function usageFilePath(groupFolder: string, chatJid: string): string {
   );
 }
 
-export type AutoCompactReason = 'idle';
+export type AutoCompactReason = 'idle' | 'nightly';
 
 export interface AutoCompactDecision {
   fire: boolean;
@@ -43,6 +43,10 @@ export interface AutoCompactDecision {
 }
 
 interface UsageSnapshot {
+  contextUsage?: {
+    totalTokens?: number;
+    maxTokens?: number;
+  };
   modelUsage?: Record<
     string,
     {
@@ -105,7 +109,22 @@ export function currentTokenPct(usage: UsageSnapshot | null): {
   pct: number;
   inputTokens: number;
 } {
-  if (!usage || !usage.modelUsage) return { pct: 0, inputTokens: 0 };
+  if (!usage) return { pct: 0, inputTokens: 0 };
+  if (
+    usage.contextUsage &&
+    typeof usage.contextUsage.totalTokens === 'number'
+  ) {
+    const contextWindow =
+      typeof usage.contextUsage.maxTokens === 'number'
+        ? usage.contextUsage.maxTokens
+        : 0;
+    const pct =
+      contextWindow > 0
+        ? (usage.contextUsage.totalTokens / contextWindow) * 100
+        : 0;
+    return { pct, inputTokens: usage.contextUsage.totalTokens };
+  }
+  if (!usage.modelUsage) return { pct: 0, inputTokens: 0 };
   let best = { pct: 0, inputTokens: 0 };
   for (const u of Object.values(usage.modelUsage)) {
     if (!u.contextWindow || u.contextWindow <= 0) continue;
@@ -113,6 +132,44 @@ export function currentTokenPct(usage: UsageSnapshot | null): {
     if (pct > best.pct) best = { pct, inputTokens: u.inputTokens };
   }
   return best;
+}
+
+export function nightlyWindowStartMs(
+  now: number,
+  cfg: AutoCompactConfig,
+): number {
+  const d = new Date(now);
+  return Date.UTC(
+    d.getUTCFullYear(),
+    d.getUTCMonth(),
+    d.getUTCDate(),
+    cfg.nightlyUtcHour,
+    0,
+    0,
+    0,
+  );
+}
+
+export function isWithinNightlyWindow(
+  now: number,
+  cfg: AutoCompactConfig,
+): boolean {
+  if (!cfg.enabled || !cfg.nightlyEnabled) return false;
+  const start = nightlyWindowStartMs(now, cfg);
+  return now >= start && now < start + cfg.nightlyWindowMinutes * 60_000;
+}
+
+/**
+ * Cheap gate for the scheduler: when host idle compact is disabled, avoid
+ * reading every usage.json on every poll outside the nightly window.
+ */
+export function shouldReadUsageForAutoCompact(
+  cfg: AutoCompactConfig,
+  now: number,
+): boolean {
+  if (!cfg.enabled) return false;
+  if (cfg.idleEnabled) return true;
+  return isWithinNightlyWindow(now, cfg);
 }
 
 export function evaluateGroup(params: {
@@ -145,6 +202,19 @@ export function evaluateGroup(params: {
     return { fire: false, reason: null, pct, inputTokens };
   }
 
+  if (cfg.nightlyEnabled && isWithinNightlyWindow(now, cfg)) {
+    const windowStart = nightlyWindowStartMs(now, cfg);
+    const alreadyCompactedInWindow =
+      lastCompactFiredAt !== null && lastCompactFiredAt >= windowStart;
+    if (!alreadyCompactedInWindow && inputTokens >= cfg.minInputTokens) {
+      return { fire: true, reason: 'nightly', pct, inputTokens };
+    }
+  }
+
+  if (!cfg.idleEnabled) {
+    return { fire: false, reason: null, pct, inputTokens };
+  }
+
   // Treat the last compact as pseudo-activity so the idle timer restarts
   // after a compaction — prevents repeated firing on a still-idle group.
   const effectiveLastActivity =
@@ -152,7 +222,7 @@ export function evaluateGroup(params: {
 
   if (
     effectiveLastActivity &&
-    inputTokens > 0 &&
+    inputTokens >= cfg.minInputTokens &&
     now - effectiveLastActivity >= cfg.idleMinutes * 60_000
   ) {
     return { fire: true, reason: 'idle', pct, inputTokens };

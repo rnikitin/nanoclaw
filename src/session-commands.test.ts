@@ -139,6 +139,8 @@ function makeDeps(
     resetSession: vi.fn(),
     closeActiveContainer: vi.fn(),
     getUsageReport: vi.fn().mockReturnValue('No usage data yet.'),
+    getEffort: vi.fn().mockReturnValue('high'),
+    setEffort: vi.fn(),
     ...overrides,
   };
 }
@@ -174,6 +176,114 @@ describe('handleSessionCommand', () => {
       '/compact',
       expect.any(Function),
     );
+    expect(deps.advanceCursor).toHaveBeenCalledWith('100');
+  });
+
+  it('sends manual /compact output to chat', async () => {
+    const deps = makeDeps({
+      runAgent: vi.fn().mockImplementation(async (_prompt, onOutput) => {
+        await onOutput({
+          status: 'success',
+          result: 'Conversation compacted.',
+        });
+        return 'success';
+      }),
+    });
+
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('/compact')],
+      isMainGroup: true,
+      groupName: 'test',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+
+    expect(result).toEqual({ handled: true, success: true });
+    expect(deps.sendMessage).toHaveBeenCalledWith('Conversation compacted.');
+  });
+
+  it('rejects legacy xhigh effort values', async () => {
+    const deps = makeDeps();
+
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('/effort xhigh')],
+      isMainGroup: true,
+      groupName: 'test',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+
+    expect(result).toEqual({ handled: true, success: true });
+    expect(deps.setEffort).not.toHaveBeenCalled();
+    expect(deps.sendMessage).toHaveBeenCalledWith(
+      'Invalid effort "xhigh". Valid: low, medium, high, max, reset.',
+    );
+  });
+
+  it('silences synthetic auto-compact output', async () => {
+    const deps = makeDeps({
+      runAgent: vi.fn().mockImplementation(async (_prompt, onOutput) => {
+        await onOutput({
+          status: 'success',
+          result: 'Conversation compacted.',
+        });
+        return 'success';
+      }),
+    });
+
+    const result = await handleSessionCommand({
+      missedMessages: [
+        makeMsg('/compact', {
+          id: 'autocompact-123',
+          sender: 'system',
+          sender_name: 'system',
+          is_from_me: true,
+        }),
+      ],
+      isMainGroup: false,
+      groupName: 'test',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+
+    expect(result).toEqual({ handled: true, success: true });
+    expect(deps.runAgent).toHaveBeenCalledWith(
+      '/compact',
+      expect.any(Function),
+    );
+    expect(deps.sendMessage).not.toHaveBeenCalled();
+    expect(deps.advanceCursor).toHaveBeenCalledWith('100');
+  });
+
+  it('silences synthetic auto-compact failure notices', async () => {
+    const deps = makeDeps({
+      runAgent: vi.fn().mockImplementation(async (_prompt, onOutput) => {
+        await onOutput({ status: 'error', result: 'compact failed' });
+        return 'error';
+      }),
+    });
+
+    const result = await handleSessionCommand({
+      missedMessages: [
+        makeMsg('/compact', {
+          id: 'autocompact-123',
+          sender: 'system',
+          sender_name: 'system',
+          is_from_me: true,
+        }),
+      ],
+      isMainGroup: false,
+      groupName: 'test',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+
+    expect(result).toEqual({ handled: true, success: true });
+    expect(deps.sendMessage).not.toHaveBeenCalled();
     expect(deps.advanceCursor).toHaveBeenCalledWith('100');
   });
 

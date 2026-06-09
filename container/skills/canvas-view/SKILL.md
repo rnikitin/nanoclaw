@@ -50,3 +50,37 @@ A `<canvas-event>` arrives in your next turn:
 ## Re-publishing
 
 Using the same `--file` produces the same canvas ID, so re-publishing updates the existing view instead of creating a new one. This is the normal flow after processing feedback — edit the markdown, run the script again, send the same URL.
+
+## Wire protocol (AG-UI)
+
+Canvas uses the [AG-UI protocol](https://github.com/ag-ui-protocol/ag-ui) on the WebSocket between browser and host. You publish via IPC as before — the host translates into AG-UI events.
+
+**Each publish emits this sequence to the browser:**
+
+```
+RunStarted { threadId, runId }
+Custom { name: "nanoclaw.canvas.render", value: { canvasId, title, jsx, state } }
+RunFinished { threadId, runId }
+```
+
+Snapshot-only — every publish carries full `jsx + state`. No partial deltas. Re-publishing replaces the render wholesale.
+
+**Close event:**
+```
+Custom { name: "nanoclaw.canvas.close", value: { canvasId } }
+```
+
+**Browser → agent events** become a single AG-UI Custom event and land in your context as `<canvas-event>`:
+
+```
+Custom { name: "nanoclaw.canvas.interaction", value: { canvasId, event, data } }
+```
+
+Host runs the middleware chain first (`groups/{group}/canvas-middleware/config.json`); if no rule matches or rules pass through, the event reaches you. canvas-view's `approve`/`submit` both need LLM synthesis, so no middleware is wired for them — they always reach the agent.
+
+### What this means for skill authors
+
+- **No delta thinking required.** Build the full state every publish and call the script again.
+- **`send()` inside your JSX** is routed as `Custom(nanoclaw.canvas.interaction)` — the `event` name you pass becomes the `type` of the `<canvas-event>` you receive on the next turn.
+- **`save` event has special handling** — host persists the `data` into canvas state optimistically before the agent runs, so your state survives agent restarts/crashes.
+- **`threadId` = chatJid, `runId`** is generated per broadcast — useful only if you attach an external AG-UI client. Local IPC publish needs neither.

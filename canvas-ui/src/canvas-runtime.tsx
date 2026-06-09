@@ -1,12 +1,13 @@
 /**
  * Canvas Runtime — renders agent-generated JSX in the browser.
  *
- * The agent sends JSX code as a string. We compile it with Sucrase
- * (lightweight JSX→JS transform), then render it as a React component.
+ * Wire format: AG-UI protocol (github.com/ag-ui-protocol/ag-ui).
+ * Receives: RunStarted → Custom(nanoclaw.canvas.render) → RunFinished,
+ * or Custom(nanoclaw.canvas.close). Sends back:
+ * Custom(nanoclaw.canvas.interaction|subscribe|ping).
  *
- * The component receives:
- *   - state: current canvas state (updated by agent)
- *   - send(event): function to send events back to agent via WebSocket
+ * The agent sends JSX code as a string. Sucrase compiles it, React
+ * renders. Component receives { state, send, theme }.
  */
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createRoot, Root } from 'react-dom/client';
@@ -56,6 +57,7 @@ class CanvasWsClient {
   private reconnectDelay = 500;
   private onMessage: (msg: any) => void;
   private statusEl: HTMLElement | null;
+  private lastPongAt = Date.now();
 
   constructor(config: CanvasConfig, onMessage: (msg: any) => void) {
     this.config = config;
@@ -82,12 +84,18 @@ class CanvasWsClient {
     this.ws.onopen = () => {
       this.setStatus('connected', 'connected');
       this.reconnectDelay = 500;
+      this.lastPongAt = Date.now();
     };
 
     this.ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
-        if (msg.type === 'pong') return;
+        // Filter AG-UI lifecycle + pong; only forward renderable events.
+        if (msg.type === 'RunStarted' || msg.type === 'RunFinished') return;
+        if (msg.type === 'Custom' && msg.name === 'nanoclaw.canvas.pong') {
+          this.lastPongAt = Date.now();
+          return;
+        }
         this.onMessage(msg);
       } catch (err) {
         console.error('WS message parse error:', err);
@@ -103,24 +111,52 @@ class CanvasWsClient {
       this.ws?.close();
     };
 
-    // Ping keepalive
+    // Ping keepalive + zombie-socket watchdog. No pong for 90s → force
+    // reconnect (browser may keep a half-closed TCP in OPEN state forever
+    // after laptop sleep or NAT timeout).
     const pingInterval = setInterval(() => {
-      if (this.ws?.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ type: 'ping' }));
+      if (this.ws?.readyState !== WebSocket.OPEN) return;
+      if (Date.now() - this.lastPongAt > 90000) {
+        this.ws.close();
+        return;
       }
+      this.ws.send(
+        JSON.stringify({
+          type: 'Custom',
+          name: 'nanoclaw.canvas.ping',
+          value: {},
+        }),
+      );
     }, 30000);
 
     this.ws.addEventListener('close', () => clearInterval(pingInterval));
+  }
+
+  resync(): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(
+        JSON.stringify({
+          type: 'Custom',
+          name: 'nanoclaw.canvas.subscribe',
+          value: { canvasId: this.config.canvasId },
+        }),
+      );
+    } else {
+      this.ws?.close();
+    }
   }
 
   send(event: string, data: unknown): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     this.ws.send(
       JSON.stringify({
-        type: 'event',
-        canvas_id: this.config.canvasId,
-        event,
-        data,
+        type: 'Custom',
+        name: 'nanoclaw.canvas.interaction',
+        value: {
+          canvasId: this.config.canvasId,
+          event,
+          data,
+        },
       }),
     );
   }
@@ -237,16 +273,20 @@ function init(config: CanvasConfig): void {
   root = createRoot(rootEl);
 
   wsClient = new CanvasWsClient(config, (msg) => {
-    if (msg.type === 'create') {
-      currentJsx = msg.jsx || '';
-      currentState = msg.state || {};
-      if (msg.title) document.title = msg.title;
+    // AG-UI: all renderable events arrive as Custom with nanoclaw.canvas.* names.
+    if (msg.type !== 'Custom' || typeof msg.name !== 'string') return;
+    const value = msg.value || {};
+
+    if (msg.name === 'nanoclaw.canvas.render') {
+      // Snapshot-only: replace jsx+state every render.
+      currentJsx = value.jsx || '';
+      currentState = value.state || {};
+      if (value.title) document.title = value.title;
       render();
-    } else if (msg.type === 'update') {
-      if (msg.jsx) currentJsx = msg.jsx;
-      if (msg.state) currentState = { ...currentState, ...msg.state };
-      render();
-    } else if (msg.type === 'close') {
+      return;
+    }
+
+    if (msg.name === 'nanoclaw.canvas.close') {
       currentJsx = '';
       currentState = {};
       root?.render(
@@ -262,6 +302,12 @@ function init(config: CanvasConfig): void {
 
   // Connect WebSocket
   wsClient.connect();
+
+  // Re-fetch snapshot when tab regains visibility (catches stale renders
+  // after laptop sleep / long background).
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') wsClient?.resync();
+  });
 }
 
 // Export to window

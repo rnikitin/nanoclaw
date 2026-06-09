@@ -21,6 +21,8 @@ export type TaskIpcMessage =
       schedule_value: string;
       context_mode?: ScheduledTask['context_mode'];
       execution_mode?: ScheduledTask['execution_mode'];
+      precondition?: string;
+      precondition_invert?: boolean;
       targetJid: string;
       taskId?: string;
     }
@@ -33,6 +35,8 @@ export type TaskIpcMessage =
       prompt?: string;
       schedule_type?: ScheduledTask['schedule_type'];
       schedule_value?: string;
+      precondition?: string;
+      precondition_invert?: boolean;
     }
   | { type: 'refresh_groups' }
   | {
@@ -51,6 +55,12 @@ export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
   sendFile: (jid: string, filePath: string, caption?: string) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
+  /**
+   * True if a container for this chatJid is currently running in the given folder.
+   * Covers chats that aren't in registered_groups but are actively served by a
+   * container (Discord threads).
+   */
+  isActiveInFolder: (chatJid: string, folder: string) => boolean;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
   getAvailableGroups: () => AvailableGroup[];
@@ -85,7 +95,11 @@ async function drainMessages(
       const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
       if (data.type === 'message' && data.chatJid && data.text) {
         const targetGroup = registeredGroups[data.chatJid];
-        if (isMain || (targetGroup && targetGroup.folder === sourceGroup)) {
+        const authorized =
+          isMain ||
+          (targetGroup && targetGroup.folder === sourceGroup) ||
+          deps.isActiveInFolder(data.chatJid, sourceGroup);
+        if (authorized) {
           await deps
             .sendMessage(data.chatJid, data.text)
             .catch((err) =>
@@ -106,7 +120,11 @@ async function drainMessages(
         }
       } else if (data.type === 'file' && data.chatJid && data.filePath) {
         const targetGroup = registeredGroups[data.chatJid];
-        if (isMain || (targetGroup && targetGroup.folder === sourceGroup)) {
+        const authorized =
+          isMain ||
+          (targetGroup && targetGroup.folder === sourceGroup) ||
+          deps.isActiveInFolder(data.chatJid, sourceGroup);
+        if (authorized) {
           let relFilePath = data.filePath;
           if (relFilePath.startsWith('/workspace/group/')) {
             relFilePath = relFilePath.slice('/workspace/group/'.length);
@@ -211,7 +229,7 @@ async function drainCanvas(
           fs.unlinkSync(filePath);
           continue;
         }
-        const result = handleCanvasIpc(sourceGroup, chatJid, data);
+        const result = await handleCanvasIpc(sourceGroup, chatJid, data);
         if (result.url) {
           const host = process.env.CANVAS_HOST || 'ark.nikitin.me';
           const url = `https://${host}${result.url}`;
@@ -510,6 +528,8 @@ export async function processTaskIpc(
           schedule_value: data.schedule_value,
           context_mode: contextMode,
           execution_mode: executionMode,
+          precondition: data.precondition ?? null,
+          precondition_invert: !!data.precondition_invert,
           next_run: nextRun,
           status: 'active',
           created_at: new Date().toISOString(),
@@ -622,6 +642,10 @@ export async function processTaskIpc(
           updates.schedule_type = data.schedule_type;
         if (data.schedule_value !== undefined)
           updates.schedule_value = data.schedule_value;
+        if (data.precondition !== undefined)
+          updates.precondition = data.precondition;
+        if (data.precondition_invert !== undefined)
+          updates.precondition_invert = data.precondition_invert;
 
         // Recompute next_run if schedule changed
         if (data.schedule_type || data.schedule_value) {
@@ -710,7 +734,9 @@ export async function processTaskIpc(
           typeof data.effort === 'string' &&
           ['low', 'medium', 'high', 'max'].includes(data.effort)
             ? (data.effort as Effort)
-            : undefined;
+            : data.effort === 'xhigh'
+              ? 'high'
+              : undefined;
         const model =
           typeof data.model === 'string' && data.model.length > 0
             ? data.model

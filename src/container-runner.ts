@@ -40,6 +40,9 @@ import { ensureDir } from './fs-utils.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup, TaskSnapshotRow } from './types.js';
 
+const CLAUDE_CODE_AUTO_COMPACT_WINDOW = '198000';
+const CLAUDE_CODE_DISABLE_1M_CONTEXT = '1';
+
 /**
  * MD5 of all .ts file contents in a directory. Stable across mtimes so we can
  * detect real source changes and skip no-op syncs. Memoized per dir — .ts
@@ -159,6 +162,18 @@ export function buildVolumeMounts(
         containerPath: '/workspace/global',
         readonly: true,
       });
+      // File-level RW overlay for the shared yt-dlp cookies so non-main
+      // groups can still rotate cookies after each request. Without this
+      // yt-dlp's save_cookies() hits OSError [Errno 30] on the RO global
+      // mount. The rest of /workspace/global stays read-only.
+      const sharedCookies = path.join(globalDir, '.yt-cookies.txt');
+      if (fs.existsSync(sharedCookies)) {
+        mounts.push({
+          hostPath: sharedCookies,
+          containerPath: '/workspace/global/.yt-cookies.txt',
+          readonly: false,
+        });
+      }
     }
 
     // Mount shared skills. Cannot nest inside read-only /workspace/global,
@@ -200,6 +215,8 @@ export function buildVolumeMounts(
             // Enable agent swarms (subagent orchestration)
             // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
             CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+            CLAUDE_CODE_AUTO_COMPACT_WINDOW,
+            CLAUDE_CODE_DISABLE_1M_CONTEXT,
             // Load CLAUDE.md from additional mounted directories
             // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
             CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
@@ -216,13 +233,15 @@ export function buildVolumeMounts(
     // Remove hardcoded "model" field from settings — env vars are authoritative
     try {
       const existing = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+      existing.env = {
+        ...(existing.env || {}),
+        CLAUDE_CODE_AUTO_COMPACT_WINDOW,
+        CLAUDE_CODE_DISABLE_1M_CONTEXT,
+      };
       if (existing.model) {
         delete existing.model;
-        fs.writeFileSync(
-          settingsFile,
-          JSON.stringify(existing, null, 2) + '\n',
-        );
       }
+      fs.writeFileSync(settingsFile, JSON.stringify(existing, null, 2) + '\n');
     } catch (err) {
       logger.debug(
         { err, path: settingsFile },
@@ -272,15 +291,25 @@ export function buildVolumeMounts(
     }
   }
 
-  // Sync global auto-skills (promoted skills available to all rooms)
-  const globalAutoSkillsSrc = path.join(GROUPS_DIR, 'global', 'skills', 'auto');
-  if (fs.existsSync(globalAutoSkillsSrc)) {
-    for (const skillDir of fs.readdirSync(globalAutoSkillsSrc)) {
-      const srcDir = path.join(globalAutoSkillsSrc, skillDir);
+  // Sync global skills (hand-crafted in groups/global/skills/* and auto-promoted in groups/global/skills/auto/*)
+  const globalSkillsSrc = path.join(GROUPS_DIR, 'global', 'skills');
+  if (fs.existsSync(globalSkillsSrc)) {
+    for (const entry of fs.readdirSync(globalSkillsSrc)) {
+      const srcDir = path.join(globalSkillsSrc, entry);
       if (!fs.statSync(srcDir).isDirectory()) continue;
-      const dstDir = path.join(skillsDst, skillDir);
-      // Don't overwrite local version with global
-      if (!fs.existsSync(dstDir)) {
+      if (entry === 'auto') {
+        // Auto-promoted: don't overwrite (allows per-group local override to win)
+        for (const skillDir of fs.readdirSync(srcDir)) {
+          const autoSrc = path.join(srcDir, skillDir);
+          if (!fs.statSync(autoSrc).isDirectory()) continue;
+          const dstDir = path.join(skillsDst, skillDir);
+          if (!fs.existsSync(dstDir)) {
+            fs.cpSync(autoSrc, dstDir, { recursive: true });
+          }
+        }
+      } else {
+        // Hand-crafted global: canonical, always overwrite so updates propagate
+        const dstDir = path.join(skillsDst, entry);
         fs.cpSync(srcDir, dstDir, { recursive: true });
       }
     }
@@ -409,6 +438,14 @@ export function buildContainerArgs(
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+  args.push(
+    '-e',
+    `CLAUDE_CODE_AUTO_COMPACT_WINDOW=${CLAUDE_CODE_AUTO_COMPACT_WINDOW}`,
+  );
+  args.push(
+    '-e',
+    `CLAUDE_CODE_DISABLE_1M_CONTEXT=${CLAUDE_CODE_DISABLE_1M_CONTEXT}`,
+  );
 
   // Identity env: the agent-runner reads these at module load to compute
   // per-chatJid IPC paths (input dir, usage.json). Without them the container
@@ -442,6 +479,24 @@ export function buildContainerArgs(
     args.push('-e', `GITHUB_TOKEN=${ghToken}`);
   }
 
+  // Pass OpenRouter API key for multi-provider LLM access (audio transcription, etc.)
+  const openrouterKey =
+    readEnvFile(['OPENROUTER_API_KEY']).OPENROUTER_API_KEY ||
+    process.env.OPENROUTER_API_KEY ||
+    '';
+  if (openrouterKey) {
+    args.push('-e', `OPENROUTER_API_KEY=${openrouterKey}`);
+  }
+
+  // YouTube Data API v3 key (used by youtube-search skill).
+  const youtubeKey =
+    readEnvFile(['YOUTUBE_API_KEY']).YOUTUBE_API_KEY ||
+    process.env.YOUTUBE_API_KEY ||
+    '';
+  if (youtubeKey) {
+    args.push('-e', `YOUTUBE_API_KEY=${youtubeKey}`);
+  }
+
   // Per-group model + reasoning effort from ~/.config/nanoclaw/group-models.json.
   // The tier env vars (ANTHROPIC_DEFAULT_*_MODEL) drive subagent/task-tool model
   // selection; NANOCLAW_PRIMARY_MODEL and NANOCLAW_REASONING_EFFORT are read by
@@ -452,6 +507,21 @@ export function buildContainerArgs(
   args.push('-e', `ANTHROPIC_DEFAULT_HAIKU_MODEL=${resolved.tiers.haiku}`);
   args.push('-e', `NANOCLAW_PRIMARY_MODEL=${resolved.primaryModel}`);
   args.push('-e', `NANOCLAW_REASONING_EFFORT=${resolved.effort}`);
+
+  // Active recall gate: OFF unless host env sets it. Per-request injection
+  // breaks prompt cache + invokes Haiku on every turn.
+  if (process.env.NANOCLAW_ACTIVE_RECALL === '1') {
+    args.push('-e', 'NANOCLAW_ACTIVE_RECALL=1');
+  }
+
+  const notionMcpMode = process.env.NANOCLAW_NOTION_MCP;
+  if (
+    notionMcpMode === 'always' ||
+    notionMcpMode === 'auto' ||
+    notionMcpMode === 'off'
+  ) {
+    args.push('-e', `NANOCLAW_NOTION_MCP=${notionMcpMode}`);
+  }
 
   // Pass Notion OAuth access token (if configured via notion-oauth.sh)
   const notionOAuthFile = path.join(DATA_DIR, 'notion-oauth.json');

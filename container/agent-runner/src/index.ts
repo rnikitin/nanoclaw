@@ -18,11 +18,26 @@
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
-import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
+import {
+  query,
+  HookCallback,
+  PreCompactHookInput,
+} from '@anthropic-ai/claude-agent-sdk';
+import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
+import {
+  toContextUsageSnapshot,
+  type ContextUsagePhase,
+  type ContextUsageSnapshot,
+} from './context-usage.js';
 import { todayISO } from './date-utils.js';
 import { sanitizeJid } from './jid-utils.js';
+import {
+  buildAllowedTools,
+  shouldEnableNotionMcp,
+  shouldRestartQueryForNotionMcp,
+} from './notion-mcp.js';
 import { trackContainerRecall } from './recall-tracker.js';
 
 interface ContainerInput {
@@ -57,9 +72,10 @@ interface SessionsIndex {
   entries: SessionEntry[];
 }
 
+type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
 interface ImageContentBlock {
   type: 'image';
-  source: { type: 'base64'; media_type: string; data: string };
+  source: { type: 'base64'; media_type: ImageMediaType; data: string };
 }
 interface TextContentBlock {
   type: 'text';
@@ -74,7 +90,9 @@ interface SDKUserMessage {
   session_id: string;
 }
 
-const SANITIZED_CHAT_JID = sanitizeJid(process.env.NANOCLAW_CHAT_JID ?? 'unknown');
+const SANITIZED_CHAT_JID = sanitizeJid(
+  process.env.NANOCLAW_CHAT_JID ?? 'unknown',
+);
 const IPC_INPUT_DIR = `/workspace/ipc/input/${SANITIZED_CHAT_JID}`;
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_MESSAGES_DIR = '/workspace/ipc/messages';
@@ -90,15 +108,19 @@ interface UsageData {
   totalCostUsd?: number;
   numTurns?: number;
   durationMs?: number;
-  modelUsage?: Record<string, {
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadInputTokens: number;
-    cacheCreationInputTokens: number;
-    contextWindow: number;
-    maxOutputTokens: number;
-    costUSD: number;
-  }>;
+  modelUsage?: Record<
+    string,
+    {
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadInputTokens: number;
+      cacheCreationInputTokens: number;
+      contextWindow: number;
+      maxOutputTokens: number;
+      costUSD: number;
+    }
+  >;
+  contextUsage?: ContextUsageSnapshot;
   updatedAt: number;
 }
 
@@ -118,12 +140,50 @@ function saveUsageData(data: UsageData): void {
     fs.mkdirSync(path.dirname(USAGE_FILE), { recursive: true });
     fs.writeFileSync(USAGE_FILE, JSON.stringify(merged));
   } catch (err) {
-    log(`Failed to write usage file: ${err instanceof Error ? err.message : String(err)}`);
+    log(
+      `Failed to write usage file: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 }
 
 const usageData: UsageData = { updatedAt: 0 };
 const IPC_POLL_MS = 500;
+const CONTEXT_USAGE_TIMEOUT_MS = 5_000;
+
+async function captureContextUsage(
+  queryHandle: Query,
+  phase: ContextUsagePhase,
+): Promise<void> {
+  try {
+    const timeout = new Promise<null>((resolve) => {
+      setTimeout(() => resolve(null), CONTEXT_USAGE_TIMEOUT_MS);
+    });
+    const contextUsage = await Promise.race([
+      queryHandle.getContextUsage(),
+      timeout,
+    ]);
+    if (!contextUsage) {
+      log(`Context usage snapshot timed out (${phase})`);
+      return;
+    }
+
+    const snapshot = toContextUsageSnapshot({ usage: contextUsage, phase });
+    usageData.contextUsage = snapshot;
+
+    const topMcp = snapshot.mcpTools
+      .slice(0, 5)
+      .map((tool) => `${tool.serverName}/${tool.name}:${tool.tokens}`)
+      .join(', ');
+    log(
+      `Context usage (${phase}): total=${snapshot.totalTokens}/${snapshot.maxTokens} ` +
+        `pct=${snapshot.percentage.toFixed(1)} topMcp=${topMcp || 'none'}`,
+    );
+  } catch (err) {
+    log(
+      `Context usage snapshot failed (${phase}): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
 
 /**
  * Push-based async iterable for streaming user messages to the SDK.
@@ -165,7 +225,9 @@ class MessageStream {
         yield this.queue.shift()!;
       }
       if (this.done) return;
-      await new Promise<void>(r => { this.waiting = r; });
+      await new Promise<void>((r) => {
+        this.waiting = r;
+      });
       this.waiting = null;
     }
   }
@@ -175,7 +237,9 @@ async function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = '';
     process.stdin.setEncoding('utf8');
-    process.stdin.on('data', chunk => { data += chunk; });
+    process.stdin.on('data', (chunk) => {
+      data += chunk;
+    });
     process.stdin.on('end', () => resolve(data));
     process.stdin.on('error', reject);
   });
@@ -194,7 +258,10 @@ function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
 }
 
-function getSessionSummary(sessionId: string, transcriptPath: string): string | null {
+function getSessionSummary(
+  sessionId: string,
+  transcriptPath: string,
+): string | null {
   const projectDir = path.dirname(transcriptPath);
   const indexPath = path.join(projectDir, 'sessions-index.json');
 
@@ -204,13 +271,17 @@ function getSessionSummary(sessionId: string, transcriptPath: string): string | 
   }
 
   try {
-    const index: SessionsIndex = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
-    const entry = index.entries.find(e => e.sessionId === sessionId);
+    const index: SessionsIndex = JSON.parse(
+      fs.readFileSync(indexPath, 'utf-8'),
+    );
+    const entry = index.entries.find((e) => e.sessionId === sessionId);
     if (entry?.summary) {
       return entry.summary;
     }
   } catch (err) {
-    log(`Failed to read sessions index: ${err instanceof Error ? err.message : String(err)}`);
+    log(
+      `Failed to read sessions index: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   return null;
@@ -249,42 +320,18 @@ function createPreCompactHook(assistantName?: string): HookCallback {
       const filename = `${date}-${name}.md`;
       const filePath = path.join(conversationsDir, filename);
 
-      const markdown = formatTranscriptMarkdown(messages, summary, assistantName);
+      const markdown = formatTranscriptMarkdown(
+        messages,
+        summary,
+        assistantName,
+      );
       fs.writeFileSync(filePath, markdown);
 
       log(`Archived conversation to ${filePath}`);
-
-      // Append summary to daily note for dreaming system
-      try {
-        const memoryDir = '/workspace/group/memory';
-        fs.mkdirSync(memoryDir, { recursive: true });
-        const dailyNotePath = path.join(memoryDir, `${date}.md`);
-        const topicLine = summary || 'conversation';
-        const turnCount = messages.length;
-        const snippet = messages
-          .filter(m => m.role === 'user')
-          .map(m => m.content.slice(0, 100))
-          .slice(0, 3)
-          .join(' | ');
-        const entry = `- ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}: ${topicLine} (${turnCount} msgs) — ${snippet}\n`;
-
-        // Extract key facts from the conversation
-        const keyFacts = extractKeyFacts(messages);
-        const factsBlock = keyFacts.length > 0
-          ? keyFacts.map(f => `  - ${f}`).join('\n') + '\n'
-          : '';
-
-        if (fs.existsSync(dailyNotePath)) {
-          fs.appendFileSync(dailyNotePath, entry + factsBlock);
-        } else {
-          fs.writeFileSync(dailyNotePath, `# ${date}\n\nSession notes:\n${entry}${factsBlock}`);
-        }
-        log(`Updated daily note: ${dailyNotePath}`);
-      } catch (dailyErr) {
-        log(`Failed to update daily note: ${dailyErr instanceof Error ? dailyErr.message : String(dailyErr)}`);
-      }
     } catch (err) {
-      log(`Failed to archive transcript: ${err instanceof Error ? err.message : String(err)}`);
+      log(
+        `Failed to archive transcript: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
 
     return {};
@@ -317,9 +364,12 @@ function parseTranscript(content: string): ParsedMessage[] {
     try {
       const entry = JSON.parse(line);
       if (entry.type === 'user' && entry.message?.content) {
-        const text = typeof entry.message.content === 'string'
-          ? entry.message.content
-          : entry.message.content.map((c: { text?: string }) => c.text || '').join('');
+        const text =
+          typeof entry.message.content === 'string'
+            ? entry.message.content
+            : entry.message.content
+                .map((c: { text?: string }) => c.text || '')
+                .join('');
         if (text) messages.push({ role: 'user', content: text });
       } else if (entry.type === 'assistant' && entry.message?.content) {
         const textParts = entry.message.content
@@ -328,22 +378,26 @@ function parseTranscript(content: string): ParsedMessage[] {
         const text = textParts.join('');
         if (text) messages.push({ role: 'assistant', content: text });
       }
-    } catch {
-    }
+    } catch {}
   }
 
   return messages;
 }
 
-function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | null, assistantName?: string): string {
+function formatTranscriptMarkdown(
+  messages: ParsedMessage[],
+  title?: string | null,
+  assistantName?: string,
+): string {
   const now = new Date();
-  const formatDateTime = (d: Date) => d.toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true
-  });
+  const formatDateTime = (d: Date) =>
+    d.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
 
   const lines: string[] = [];
   lines.push(`# ${title || 'Conversation'}`);
@@ -354,10 +408,11 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
   lines.push('');
 
   for (const msg of messages) {
-    const sender = msg.role === 'user' ? 'User' : (assistantName || 'Assistant');
-    const content = msg.content.length > 2000
-      ? msg.content.slice(0, 2000) + '...'
-      : msg.content;
+    const sender = msg.role === 'user' ? 'User' : assistantName || 'Assistant';
+    const content =
+      msg.content.length > 2000
+        ? msg.content.slice(0, 2000) + '...'
+        : msg.content;
     lines.push(`**${sender}**: ${content}`);
     lines.push('');
   }
@@ -366,40 +421,15 @@ function formatTranscriptMarkdown(messages: ParsedMessage[], title?: string | nu
 }
 
 /**
- * Extract key facts from a conversation transcript for the daily note.
- * Looks for decisions, results, and important context in assistant messages.
- */
-function extractKeyFacts(messages: ParsedMessage[]): string[] {
-  const facts: string[] = [];
-  const decisionPatterns = [
-    /(?:решил[иа]?|decided|created|deployed|fixed|implemented|configured|set up|installed)\s+(.{20,120})/i,
-    /(?:готово|done|completed|finished|успешно)[:.\s]+(.{10,120})/i,
-    /(?:ошибка|error|bug|issue|problem)[:.\s]+(.{10,120})/i,
-  ];
-
-  for (const msg of messages) {
-    if (msg.role !== 'assistant') continue;
-    // Skip very short or very long messages
-    if (msg.content.length < 30 || msg.content.length > 5000) continue;
-
-    for (const pattern of decisionPatterns) {
-      const match = msg.content.match(pattern);
-      if (match) {
-        const fact = match[0].slice(0, 150).trim();
-        if (!facts.includes(fact)) facts.push(fact);
-      }
-    }
-  }
-
-  return facts.slice(0, 5); // Max 5 facts per compaction
-}
-
-/**
  * Check for _close sentinel.
  */
 function shouldClose(): boolean {
   if (fs.existsSync(IPC_INPUT_CLOSE_SENTINEL)) {
-    try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore */ }
+    try {
+      fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL);
+    } catch {
+      /* ignore */
+    }
     return true;
   }
   return false;
@@ -412,8 +442,9 @@ function shouldClose(): boolean {
 function drainIpcInput(): string[] {
   try {
     fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
-    const files = fs.readdirSync(IPC_INPUT_DIR)
-      .filter(f => f.endsWith('.json'))
+    const files = fs
+      .readdirSync(IPC_INPUT_DIR)
+      .filter((f) => f.endsWith('.json'))
       .sort();
 
     const messages: string[] = [];
@@ -426,8 +457,14 @@ function drainIpcInput(): string[] {
           messages.push(data.text);
         }
       } catch (err) {
-        log(`Failed to process input file ${file}: ${err instanceof Error ? err.message : String(err)}`);
-        try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+        log(
+          `Failed to process input file ${file}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        try {
+          fs.unlinkSync(filePath);
+        } catch {
+          /* ignore */
+        }
       }
     }
     return messages;
@@ -473,6 +510,7 @@ type McpConfig =
 function buildMcpServers(
   mcpServerPath: string,
   containerInput: ContainerInput,
+  notionEnabled: boolean,
 ): Record<string, McpConfig> {
   const servers: Record<string, McpConfig> = {
     nanoclaw: {
@@ -492,33 +530,49 @@ function buildMcpServers(
         NANOCLAW_GROUP_DIR: '/workspace/group',
       },
     },
-    notion: process.env.NOTION_ACCESS_TOKEN
+  };
+
+  if (notionEnabled) {
+    servers.notion = process.env.NOTION_ACCESS_TOKEN
       ? {
           type: 'http' as const,
           url: 'https://mcp.notion.com/mcp',
-          headers: { 'Authorization': `Bearer ${process.env.NOTION_ACCESS_TOKEN}` },
+          headers: {
+            Authorization: `Bearer ${process.env.NOTION_ACCESS_TOKEN}`,
+          },
         }
       : {
           type: 'http' as const,
           url: 'https://mcp.notion.com/mcp',
-        },
-  };
+        };
+  }
 
   return servers;
 }
 
-function sendIpcMessage(chatJid: string, groupFolder: string, text: string): void {
+function sendIpcMessage(
+  chatJid: string,
+  groupFolder: string,
+  text: string,
+): void {
   fs.mkdirSync(IPC_MESSAGES_DIR, { recursive: true });
   const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`;
   const filepath = path.join(IPC_MESSAGES_DIR, filename);
   const tempPath = `${filepath}.tmp`;
-  fs.writeFileSync(tempPath, JSON.stringify({
-    type: 'message',
-    chatJid,
-    text,
-    groupFolder,
-    timestamp: new Date().toISOString(),
-  }, null, 2));
+  fs.writeFileSync(
+    tempPath,
+    JSON.stringify(
+      {
+        type: 'message',
+        chatJid,
+        text,
+        groupFolder,
+        timestamp: new Date().toISOString(),
+      },
+      null,
+      2,
+    ),
+  );
   fs.renameSync(tempPath, filepath);
 }
 
@@ -529,9 +583,15 @@ async function runQuery(
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
-): Promise<{ newSessionId?: string; lastAssistantUuid?: string; closedDuringQuery: boolean }> {
+): Promise<{
+  newSessionId?: string;
+  lastAssistantUuid?: string;
+  closedDuringQuery: boolean;
+  restartPrompt?: string;
+}> {
   const stream = new MessageStream();
   stream.push(prompt);
+  const notionMcp = shouldEnableNotionMcp(prompt);
 
   // Load image attachments and send as multimodal content blocks
   if (containerInput.imageAttachments?.length) {
@@ -542,7 +602,11 @@ async function runQuery(
         const data = fs.readFileSync(imgPath).toString('base64');
         blocks.push({
           type: 'image',
-          source: { type: 'base64', media_type: img.mediaType, data },
+          source: {
+            type: 'base64',
+            media_type: img.mediaType as ImageMediaType,
+            data,
+          },
         });
       } catch (err) {
         log(`Failed to load image: ${imgPath}`);
@@ -557,6 +621,7 @@ async function runQuery(
   // Scheduled tasks only check for _close — they must not process chat messages.
   let ipcPolling = true;
   let closedDuringQuery = false;
+  let restartPrompt: string | undefined;
   const pollIpcDuringQuery = () => {
     if (!ipcPolling) return;
     if (shouldClose()) {
@@ -568,7 +633,17 @@ async function runQuery(
     }
     if (!containerInput.isScheduledTask) {
       const messages = drainIpcInput();
-      for (const text of messages) {
+      for (let i = 0; i < messages.length; i++) {
+        const text = messages[i];
+        if (shouldRestartQueryForNotionMcp(notionMcp.enabled, text)) {
+          restartPrompt = messages.slice(i).join('\n\n');
+          log(
+            `Notion MCP trigger received in follow-up; restarting query (${restartPrompt.length} chars)`,
+          );
+          stream.end();
+          ipcPolling = false;
+          return;
+        }
         log(`Piping IPC message into active query (${text.length} chars)`);
         stream.push(text);
       }
@@ -583,14 +658,6 @@ async function runQuery(
   let resultCount = 0;
   let lastKeepaliveAt = 0;
   const KEEPALIVE_INTERVAL_MS = 60_000;
-
-  // When the SDK auto-compacts mid-turn it emits compact_boundary then a
-  // `result` (turn ends). Without intervention the user sees only the partial
-  // pre-compact response. Track the boundary and auto-push a continuation
-  // prompt so the model resumes in the same runQuery call.
-  let pendingCompactResume = false;
-  let compactResumesUsed = 0;
-  const MAX_COMPACT_RESUMES = 3;
 
   // Load global CLAUDE.md as additional system context (shared across all groups)
   const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
@@ -620,14 +687,24 @@ async function runQuery(
   const primaryModel = process.env.NANOCLAW_PRIMARY_MODEL || undefined;
   const rawEffort = process.env.NANOCLAW_REASONING_EFFORT;
   const effort: 'low' | 'medium' | 'high' | 'max' | undefined =
-    rawEffort === 'low' || rawEffort === 'medium' || rawEffort === 'high' || rawEffort === 'max'
-      ? rawEffort
-      : undefined;
+    rawEffort === 'xhigh'
+      ? 'high'
+      : rawEffort === 'low' ||
+          rawEffort === 'medium' ||
+          rawEffort === 'high' ||
+          rawEffort === 'max'
+        ? rawEffort
+        : undefined;
   if (primaryModel || effort) {
-    log(`Model config: model=${primaryModel ?? '(sdk default)'} effort=${effort ?? '(sdk default)'}`);
+    log(
+      `Model config: model=${primaryModel ?? '(sdk default)'} effort=${effort ?? '(sdk default)'}`,
+    );
   }
+  log(
+    `Notion MCP: ${notionMcp.enabled ? 'enabled' : 'disabled'} mode=${notionMcp.mode} reason=${notionMcp.reason}`,
+  );
 
-  for await (const message of query({
+  const queryHandle = query({
     prompt: stream,
     options: {
       cwd: '/workspace/group',
@@ -637,25 +714,22 @@ async function runQuery(
       model: primaryModel,
       effort,
       systemPrompt: globalClaudeMd
-        ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
+        ? {
+            type: 'preset' as const,
+            preset: 'claude_code' as const,
+            append: globalClaudeMd,
+          }
         : undefined,
-      allowedTools: [
-        'Bash',
-        'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'WebSearch', 'WebFetch',
-        'Task', 'TaskOutput', 'TaskStop',
-        'TeamCreate', 'TeamDelete', 'SendMessage',
-        'TodoWrite', 'ToolSearch', 'Skill',
-        'NotebookEdit',
-        'mcp__nanoclaw__*',
-        'mcp__memory__*',
-        'mcp__notion__*'
-      ],
+      allowedTools: buildAllowedTools(notionMcp.enabled),
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       settingSources: ['project', 'user'],
-      mcpServers: buildMcpServers(mcpServerPath, containerInput),
+      mcpServers: buildMcpServers(
+        mcpServerPath,
+        containerInput,
+        notionMcp.enabled,
+      ),
       onElicitation: async (request) => {
         if (request.mode === 'url' && request.url) {
           log(`MCP OAuth requested by ${request.serverName}: ${request.url}`);
@@ -666,16 +740,25 @@ async function runQuery(
           );
           return { action: 'accept' as const };
         }
-        log(`Declining elicitation from ${request.serverName}: ${request.mode}`);
+        log(
+          `Declining elicitation from ${request.serverName}: ${request.mode}`,
+        );
         return { action: 'decline' as const };
       },
       hooks: {
-        PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
+        PreCompact: [
+          { hooks: [createPreCompactHook(containerInput.assistantName)] },
+        ],
       },
-    }
-  })) {
+    },
+  });
+
+  for await (const message of queryHandle) {
     messageCount++;
-    const msgType = message.type === 'system' ? `system/${(message as { subtype?: string }).subtype}` : message.type;
+    const msgType =
+      message.type === 'system'
+        ? `system/${(message as { subtype?: string }).subtype}`
+        : message.type;
     log(`[msg #${messageCount}] type=${msgType}`);
 
     if (message.type === 'assistant' && 'uuid' in message) {
@@ -683,13 +766,22 @@ async function runQuery(
 
       // Stream assistant text as thinking progress when enabled
       if (containerInput.thinkingEnabled) {
-        const msg = message as { message?: { content?: Array<{ type: string; text?: string }> } };
+        const msg = message as {
+          message?: { content?: Array<{ type: string; text?: string }> };
+        };
         const textParts = (msg.message?.content || [])
-          .filter((b: { type: string; text?: string }) => b.type === 'text' && b.text)
+          .filter(
+            (b: { type: string; text?: string }) => b.type === 'text' && b.text,
+          )
           .map((b: { type: string; text?: string }) => b.text!);
         if (textParts.length > 0) {
           const text = textParts.join('\n').slice(0, 2000);
-          writeOutput({ status: 'success', result: text, isThinking: true, newSessionId });
+          writeOutput({
+            status: 'success',
+            result: text,
+            isThinking: true,
+            newSessionId,
+          });
         }
       }
     }
@@ -699,47 +791,69 @@ async function runQuery(
       const initMsg = message as unknown as { model?: string };
       if (initMsg.model) usageData.model = initMsg.model;
       usageData.thinkingEnabled = containerInput.thinkingEnabled;
+      await captureContextUsage(queryHandle, 'init');
       saveUsageData(usageData);
       log(`Session initialized: ${newSessionId}`);
     }
 
-    if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_notification') {
-      const tn = message as { task_id: string; status: string; summary: string };
-      log(`Task notification: task=${tn.task_id} status=${tn.status} summary=${tn.summary}`);
+    if (
+      message.type === 'system' &&
+      (message as { subtype?: string }).subtype === 'task_notification'
+    ) {
+      const tn = message as {
+        task_id: string;
+        status: string;
+        summary: string;
+      };
+      log(
+        `Task notification: task=${tn.task_id} status=${tn.status} summary=${tn.summary}`,
+      );
     }
 
     // Emit throttled keepalive on task_progress so the host knows we're still working
-    if (message.type === 'system' && (message as { subtype?: string }).subtype === 'task_progress') {
+    if (
+      message.type === 'system' &&
+      (message as { subtype?: string }).subtype === 'task_progress'
+    ) {
       const now = Date.now();
       if (now - lastKeepaliveAt >= KEEPALIVE_INTERVAL_MS) {
         lastKeepaliveAt = now;
-        writeOutput({ status: 'success', result: null, isKeepalive: true, newSessionId });
-      }
-    }
-
-    if (message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary') {
-      const meta = (message as { compact_metadata?: { trigger?: string } }).compact_metadata;
-      log(`Compact boundary observed (trigger=${meta?.trigger || 'unknown'})`);
-      if (compactResumesUsed < MAX_COMPACT_RESUMES) {
-        pendingCompactResume = true;
-      } else {
-        log(`Max compact resumes (${MAX_COMPACT_RESUMES}) reached, skipping auto-continue`);
+        writeOutput({
+          status: 'success',
+          result: null,
+          isKeepalive: true,
+          newSessionId,
+        });
       }
     }
 
     if (message.type === 'result') {
       resultCount++;
-      const textResult = 'result' in message ? (message as { result?: string }).result : null;
-      log(`Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`);
+      const textResult =
+        'result' in message ? (message as { result?: string }).result : null;
+      log(
+        `Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`,
+      );
       writeOutput({
         status: 'success',
         result: textResult || null,
-        newSessionId
+        newSessionId,
       });
 
       // Persist latest result usage data for /usage command
       const r = message as unknown as {
-        modelUsage?: Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; cacheCreationInputTokens: number; contextWindow: number; maxOutputTokens: number; costUSD: number }>;
+        modelUsage?: Record<
+          string,
+          {
+            inputTokens: number;
+            outputTokens: number;
+            cacheReadInputTokens: number;
+            cacheCreationInputTokens: number;
+            contextWindow: number;
+            maxOutputTokens: number;
+            costUSD: number;
+          }
+        >;
         total_cost_usd?: number;
         num_turns?: number;
         duration_ms?: number;
@@ -748,23 +862,79 @@ async function runQuery(
       if (r.total_cost_usd != null) usageData.totalCostUsd = r.total_cost_usd;
       if (r.num_turns != null) usageData.numTurns = r.num_turns;
       if (r.duration_ms != null) usageData.durationMs = r.duration_ms;
+      await captureContextUsage(queryHandle, 'result');
       saveUsageData(usageData);
-
-      if (pendingCompactResume) {
-        pendingCompactResume = false;
-        compactResumesUsed++;
-        log(`Auto-continuing after compact (resume ${compactResumesUsed}/${MAX_COMPACT_RESUMES})`);
-        stream.push(
-          'Продолжи ответ с того места, где он был прерван авто-компактом. ' +
-          'Не извиняйся, не пересказывай начало — просто продолжай.',
-        );
-      }
     }
   }
 
   ipcPolling = false;
-  log(`Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`);
-  return { newSessionId, lastAssistantUuid, closedDuringQuery };
+  log(
+    `Query done. Messages: ${messageCount}, results: ${resultCount}, lastAssistantUuid: ${lastAssistantUuid || 'none'}, closedDuringQuery: ${closedDuringQuery}`,
+  );
+  return { newSessionId, lastAssistantUuid, closedDuringQuery, restartPrompt };
+}
+
+/**
+ * Ask Haiku to rephrase the user prompt into a stable 3-8 keyword search query.
+ * Normalizing here makes query hashes collide for same-intent turns, so dreaming's
+ * recallCount/uniqueQueries gates actually fire. Falls back to prompt prefix on
+ * any failure.
+ */
+async function rephraseForRecall(userPrompt: string): Promise<string> {
+  const fallback = userPrompt.slice(0, 200).trim();
+  const baseUrl = process.env.ANTHROPIC_BASE_URL;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  const model = process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL;
+  if (!baseUrl || !model) return fallback;
+  if (!apiKey && !oauthToken) return fallback;
+
+  const authHeaders: Record<string, string> = apiKey
+    ? { 'x-api-key': apiKey }
+    : {
+        authorization: `Bearer ${oauthToken}`,
+        'anthropic-beta': 'oauth-2025-04-20',
+      };
+
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 3_000);
+  try {
+    const res = await fetch(`${baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'anthropic-version': '2023-06-01',
+        ...authHeaders,
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 40,
+        messages: [
+          {
+            role: 'user',
+            content: `Extract a stable 3-8 keyword search query capturing the user's intent. Lowercase, no punctuation, no quotes, space-separated. Return only the query.\n\nUser message:\n${fallback}`,
+          },
+        ],
+      }),
+      signal: ctl.signal,
+    });
+    if (!res.ok) return fallback;
+    const data = (await res.json()) as {
+      content?: Array<{ type: string; text?: string }>;
+    };
+    const text = data.content?.find((b) => b.type === 'text')?.text?.trim();
+    if (!text) return fallback;
+    const cleaned = text
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return cleaned.length >= 3 ? cleaned : fallback;
+  } catch {
+    return fallback;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -772,13 +942,19 @@ async function runQuery(
  * and return relevant context for injection into the prompt.
  * Runs before every agent response to naturally feed the dreaming system.
  */
-function activeRecall(userPrompt: string): string | null {
+async function activeRecall(userPrompt: string): Promise<string | null> {
+  // Gate: OFF by default. Per-request memory injection + Haiku rephrase kills
+  // prompt cache (memory is prepended to user prompt, not system prompt) and
+  // burns subscription tokens on every turn. Set NANOCLAW_ACTIVE_RECALL=1 to
+  // re-enable. Agents can still call memory_search MCP tool on demand.
+  if (process.env.NANOCLAW_ACTIVE_RECALL !== '1') return null;
+
   const groupDir = '/workspace/group';
 
-  // Extract a short search query from the user's prompt (first 200 chars)
-  // Skip very short or generic prompts — not enough signal for meaningful recall
-  const searchQuery = userPrompt.slice(0, 200).replace(/'/g, "'\\''");
-  if (searchQuery.trim().length < 10) return null;
+  if (userPrompt.trim().length < 10) return null;
+  const rephrased = await rephraseForRecall(userPrompt);
+  const searchQuery = rephrased.slice(0, 200).replace(/'/g, "'\\''");
+  if (searchQuery.trim().length < 3) return null;
 
   let qmdOutput: string;
   try {
@@ -797,10 +973,16 @@ function activeRecall(userPrompt: string): string | null {
     if (!block.trim()) continue;
     const sourceMatch = block.match(/^qmd:\/\/([^\s:]+)/);
     const scoreMatch = block.match(/Score:\s*(\d+)%/);
-    const contentLines = block.split('\n').filter(l =>
-      !l.startsWith('qmd://') && !l.startsWith('Title:') &&
-      !l.startsWith('Score:') && !l.startsWith('@@') && l.trim()
-    );
+    const contentLines = block
+      .split('\n')
+      .filter(
+        (l) =>
+          !l.startsWith('qmd://') &&
+          !l.startsWith('Title:') &&
+          !l.startsWith('Score:') &&
+          !l.startsWith('@@') &&
+          l.trim(),
+      );
     if (sourceMatch && contentLines.length > 0) {
       results.push({
         source: sourceMatch[1],
@@ -813,13 +995,15 @@ function activeRecall(userPrompt: string): string | null {
   if (results.length === 0) return null;
 
   trackContainerRecall(groupDir, searchQuery, results);
-  log(`Active recall: ${results.length} entries tracked for query "${searchQuery.slice(0, 50)}..."`);
+  log(
+    `Active recall: ${results.length} entries tracked for query "${searchQuery.slice(0, 50)}..."`,
+  );
 
   // Format results for prompt injection
   const contextLines = results
-    .filter(r => r.score >= 0.5)
+    .filter((r) => r.score >= 0.5)
     .slice(0, 3)
-    .map(r => `[${r.source}] ${r.content.slice(0, 300)}`);
+    .map((r) => `[${r.source}] ${r.content.slice(0, 300)}`);
 
   if (contextLines.length === 0) return null;
 
@@ -832,13 +1016,17 @@ async function main(): Promise<void> {
   try {
     const stdinData = await readStdin();
     containerInput = JSON.parse(stdinData);
-    try { fs.unlinkSync('/tmp/input.json'); } catch { /* may not exist */ }
+    try {
+      fs.unlinkSync('/tmp/input.json');
+    } catch {
+      /* may not exist */
+    }
     log(`Received input for group: ${containerInput.groupFolder}`);
   } catch (err) {
     writeOutput({
       status: 'error',
       result: null,
-      error: `Failed to parse input: ${err instanceof Error ? err.message : String(err)}`
+      error: `Failed to parse input: ${err instanceof Error ? err.message : String(err)}`,
     });
     process.exit(1);
   }
@@ -847,15 +1035,20 @@ async function main(): Promise<void> {
     const skillsDir = '/home/node/.claude/skills';
     if (fs.existsSync(skillsDir)) {
       const skills = fs.readdirSync(skillsDir).filter((n) => {
-        try { return fs.statSync(path.join(skillsDir, n)).isDirectory(); }
-        catch { return false; }
+        try {
+          return fs.statSync(path.join(skillsDir, n)).isDirectory();
+        } catch {
+          return false;
+        }
       });
       log(`Visible skills (${skills.length}): ${skills.sort().join(', ')}`);
     } else {
       log(`No skills dir at ${skillsDir}`);
     }
   } catch (err) {
-    log(`Skill listing failed: ${err instanceof Error ? err.message : String(err)}`);
+    log(
+      `Skill listing failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   // Credentials are injected by the host's credential proxy via ANTHROPIC_BASE_URL.
@@ -866,9 +1059,10 @@ async function main(): Promise<void> {
     NANOCLAW_CHAT_JID: containerInput.chatJid,
     NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
     NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
-    // SDK auto-compact at ~76% of Opus 200k window (effective trigger ≈ 152k).
-    // Host-side sweeper handles idle-based compact; SDK handles token-based.
-    CLAUDE_CODE_AUTO_COMPACT_WINDOW: '165000',
+    // SDK threshold is window - 20k output reserve - 13k compact buffer.
+    // 198k yields an effective auto-compact threshold of ~165k on 200k context.
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW: '198000',
+    CLAUDE_CODE_DISABLE_1M_CONTEXT: '1',
   };
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -878,7 +1072,11 @@ async function main(): Promise<void> {
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
   // Clean up stale _close sentinel from previous container runs
-  try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore */ }
+  try {
+    fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL);
+  } catch {
+    /* ignore */
+  }
 
   // Build initial prompt (drain any pending IPC messages too)
   let prompt = containerInput.prompt;
@@ -893,11 +1091,13 @@ async function main(): Promise<void> {
 
   // --- Active recall: search memory and inject context ---
   try {
-    const memoryContext = activeRecall(prompt);
+    const memoryContext = await activeRecall(prompt);
     if (memoryContext) {
       prompt = memoryContext + '\n\n' + prompt;
     }
-  } catch { /* non-fatal */ }
+  } catch {
+    /* non-fatal */
+  }
 
   // --- Slash command handling ---
   // Only known session slash commands are handled here. This prevents
@@ -926,13 +1126,16 @@ async function main(): Promise<void> {
           allowDangerouslySkipPermissions: true,
           settingSources: ['project', 'user'] as const,
           hooks: {
-            PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
+            PreCompact: [
+              { hooks: [createPreCompactHook(containerInput.assistantName)] },
+            ],
           },
         },
       })) {
-        const msgType = message.type === 'system'
-          ? `system/${(message as { subtype?: string }).subtype}`
-          : message.type;
+        const msgType =
+          message.type === 'system'
+            ? `system/${(message as { subtype?: string }).subtype}`
+            : message.type;
         log(`[slash-cmd] type=${msgType}`);
 
         if (message.type === 'system' && message.subtype === 'init') {
@@ -941,14 +1144,20 @@ async function main(): Promise<void> {
         }
 
         // Observe compact_boundary to confirm compaction completed
-        if (message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary') {
+        if (
+          message.type === 'system' &&
+          (message as { subtype?: string }).subtype === 'compact_boundary'
+        ) {
           compactBoundarySeen = true;
           log('Compact boundary observed — compaction completed');
         }
 
         if (message.type === 'result') {
           const resultSubtype = (message as { subtype?: string }).subtype;
-          const textResult = 'result' in message ? (message as { result?: string }).result : null;
+          const textResult =
+            'result' in message
+              ? (message as { result?: string }).result
+              : null;
 
           if (resultSubtype?.startsWith('error')) {
             hadError = true;
@@ -975,11 +1184,15 @@ async function main(): Promise<void> {
       writeOutput({ status: 'error', result: null, error: errorMsg });
     }
 
-    log(`Slash command done. compactBoundarySeen=${compactBoundarySeen}, hadError=${hadError}`);
+    log(
+      `Slash command done. compactBoundarySeen=${compactBoundarySeen}, hadError=${hadError}`,
+    );
 
     // Warn if compact_boundary was never observed — compaction may not have occurred
     if (!hadError && !compactBoundarySeen) {
-      log('WARNING: compact_boundary was not observed. Compaction may not have completed.');
+      log(
+        'WARNING: compact_boundary was not observed. Compaction may not have completed.',
+      );
     }
 
     // Only emit final session marker if no result was emitted yet and no error occurred
@@ -993,7 +1206,11 @@ async function main(): Promise<void> {
       });
     } else if (!hadError) {
       // Emit session-only marker so host updates session tracking
-      writeOutput({ status: 'success', result: null, newSessionId: slashSessionId });
+      writeOutput({
+        status: 'success',
+        result: null,
+        newSessionId: slashSessionId,
+      });
     }
     return;
   }
@@ -1003,9 +1220,18 @@ async function main(): Promise<void> {
   let resumeAt: string | undefined;
   try {
     while (true) {
-      log(`Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`);
+      log(
+        `Starting query (session: ${sessionId || 'new'}, resumeAt: ${resumeAt || 'latest'})...`,
+      );
 
-      const queryResult = await runQuery(prompt, sessionId, mcpServerPath, containerInput, sdkEnv, resumeAt);
+      const queryResult = await runQuery(
+        prompt,
+        sessionId,
+        mcpServerPath,
+        containerInput,
+        sdkEnv,
+        resumeAt,
+      );
       if (queryResult.newSessionId) {
         sessionId = queryResult.newSessionId;
       }
@@ -1019,6 +1245,22 @@ async function main(): Promise<void> {
       if (queryResult.closedDuringQuery) {
         log('Close sentinel consumed during query, exiting');
         break;
+      }
+
+      if (queryResult.restartPrompt) {
+        log(
+          `Restarting query for deferred MCP trigger (${queryResult.restartPrompt.length} chars)`,
+        );
+        prompt = queryResult.restartPrompt;
+        try {
+          const memoryContext = await activeRecall(prompt);
+          if (memoryContext) {
+            prompt = memoryContext + '\n\n' + prompt;
+          }
+        } catch {
+          /* non-fatal */
+        }
+        continue;
       }
 
       // Scheduled tasks are single-turn — exit after first query completes.
@@ -1046,11 +1288,13 @@ async function main(): Promise<void> {
 
       // Active recall for follow-up messages
       try {
-        const memoryContext = activeRecall(prompt);
+        const memoryContext = await activeRecall(prompt);
         if (memoryContext) {
           prompt = memoryContext + '\n\n' + prompt;
         }
-      } catch { /* non-fatal */ }
+      } catch {
+        /* non-fatal */
+      }
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
@@ -1059,7 +1303,7 @@ async function main(): Promise<void> {
       status: 'error',
       result: null,
       newSessionId: sessionId,
-      error: errorMessage
+      error: errorMessage,
     });
     process.exit(1);
   }
